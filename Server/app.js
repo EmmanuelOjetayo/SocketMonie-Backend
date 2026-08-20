@@ -107,8 +107,6 @@ app.use(compression());
 // IMPORTANT: This must come before the routes and rate limiter.
 app.use(cors(corsOptions));
 
-// Handle browser preflight requests
-app.options("*", cors(corsOptions));
 
 // ==========================================================================
 // 6. BODY PARSERS
