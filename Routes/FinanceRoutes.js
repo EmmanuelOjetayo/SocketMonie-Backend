@@ -1,0 +1,11 @@
+const express = require("express");
+const router = express.Router();
+const financeController = require("../Controllers/FinanceController");
+const protect = require("../Middleware/AuthMiddleware");
+const authorize = require("../Middleware/authorize");
+router.use(protect);
+router.use(authorize("finance_manager"));
+router.get("/overview", financeController.getOverview);
+router.get("/savings", financeController.getSavings);
+router.get("/repayments", financeController.getRepayments);
+module.exports = router;

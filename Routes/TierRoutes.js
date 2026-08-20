@@ -1,0 +1,11 @@
+const express = require("express");
+const router = express.Router();
+const tierController = require("../Controllers/TierController");
+const protect = require("../Middleware/AuthMiddleware");
+const authorize = require("../Middleware/authorize");
+router.get("/me", protect, tierController.getMyTierInfo);
+router.post("/upgrade-request", protect, tierController.requestUpgrade);
+router.put("/upgrade-request/:userId/approve", protect, authorize("super_admin"), tierController.approveUpgrade);
+router.put("/upgrade-request/:userId/reject", protect, authorize("super_admin"), tierController.rejectUpgrade);
+router.get("/all", tierController.getAllTiersInfo);
+module.exports = router;

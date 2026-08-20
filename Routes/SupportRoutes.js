@@ -1,0 +1,11 @@
+const express = require("express");
+const router = express.Router();
+const supportController = require("../Controllers/SupportController");
+const protect = require("../Middleware/AuthMiddleware");
+const authorize = require("../Middleware/authorize");
+router.use(protect);
+router.use(authorize("customer_support"));
+router.get("/tickets", supportController.getTickets);
+router.patch("/tickets/:ticketId/status", supportController.updateTicketStatus);
+router.get("/referrals", supportController.getReferrals);
+module.exports = router;
