@@ -4,17 +4,23 @@ const path = require("path");
 const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
-const mongoSanitize = require("express-mongo-sanitize");
 const hpp = require("hpp");
-const { globalLimiter } = require("../Middleware/rateLimiter");
-const dns = require("dns");
-dns.setDefaultResultOrder('ipv4first');
-dns.setServers(['8.8.8.8', '1.1.1.1']);
-// Load Environment Variables first
-dotenv.config({ path: path.join(__dirname, "../.env") });
 
+const { globalLimiter } = require("../Middleware/rateLimiter");
 const db = require("../Config/db");
-// Route Imports
+
+// ==========================================================================
+// 1. LOAD ENVIRONMENT VARIABLES
+// ==========================================================================
+
+dotenv.config({
+  path: path.join(__dirname, "../.env"),
+});
+
+// ==========================================================================
+// 2. ROUTE IMPORTS
+// ==========================================================================
+
 const AuthRoutes = require("../Routes/AuthRoutes");
 const UserRoutes = require("../Routes/UserRoutes");
 const SavingsRouter = require("../Routes/SavingsRoute");
@@ -30,92 +36,216 @@ const scoreRoutes = require("../Routes/ScoreRoutes");
 const tierRoutes = require("../Routes/TierRoutes");
 const paymentRoutes = require("../Routes/PaymentRoutes");
 const systemSettingsRoutes = require("../Routes/SystemSettingsRoutes");
-const guarantorRoutes = require("../Routes/GuarantorRoutes"); // Phase 4 Route
+const guarantorRoutes = require("../Routes/GuarantorRoutes");
+
+// ==========================================================================
+// 3. APP CONFIGURATION
+// ==========================================================================
 
 const PORT = process.env.PORT || 5000;
+
 const app = express();
 
 // ==========================================================================
-// 1. GLOBAL SECURITY & PERFORMANCE MIDDLEWARE
+// 4. CORS CONFIGURATION
 // ==========================================================================
 
-// Security Headers
+const allowedOrigins = [
+  "https://socketmonnie.netlify.app",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests without an Origin header
+    // e.g. Postman, server-to-server requests, etc.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.log(`❌ CORS blocked origin: ${origin}`);
+
+    return callback(
+      new Error(`CORS policy violation: ${origin} is not allowed`)
+    );
+  },
+
+  credentials: true,
+
+  methods: [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+  ],
+
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+  ],
+
+  optionsSuccessStatus: 204,
+};
+
+// ==========================================================================
+// 5. GLOBAL SECURITY & PERFORMANCE MIDDLEWARE
+// ==========================================================================
+
+// Security headers
 app.use(helmet());
 
-// Compress all HTTP response bodies (Gzip)
+// Compress HTTP responses
 app.use(compression());
 
-// Strict CORS Configuration
-// const allowedOrigins = [
-//   "http://localhost:5173",
-//   "https://www.socketmoni.render.com",
-//   "https://socketmoni.render.com",
-// ];
-app.use(cors());
-// app.use(
-//   cors({
-//     origin: (origin, callback) => {
-//       // Allow requests with no origin (e.g. Mobile Apps, Postman, server-to-server)
-//       if (!origin || allowedOrigins.includes(origin)) {
-//         callback(null, true);
-//       } else {
-//         callback(new Error("CORS policy violation: Access denied"));
-//       }
-//     },
-//     credentials: true,
-//     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-//     allowedHeaders: ["Content-Type", "Authorization"],
-//   })
-// );
+// CORS
+// IMPORTANT: This must come before the routes and rate limiter.
+app.use(cors(corsOptions));
 
-// Body Parsers
+// Handle browser preflight requests
+app.options("*", cors(corsOptions));
+
+// ==========================================================================
+// 6. BODY PARSERS
+// ==========================================================================
+
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
 
-// // Sanitize inputs against NoSQL Injection ($where, $gt, etc.)
-// app.use(mongoSanitize());
+app.use(
+  express.urlencoded({
+    extended: false,
+  })
+);
+
+// ==========================================================================
+// 7. OTHER SECURITY MIDDLEWARE
+// ==========================================================================
 
 // Prevent HTTP Parameter Pollution
 app.use(hpp());
+
+// Global rate limiter
+// CORS/preflight is handled BEFORE this middleware.
 app.use(globalLimiter);
 
 // ==========================================================================
-// 2. API ROUTES
+// 8. API ROUTES
 // ==========================================================================
+
 app.use("/api/auth", AuthRoutes);
+
 app.use("/api/user", UserRoutes);
+
 app.use("/api/savings", SavingsRouter);
+
 app.use("/api/reports", reportsRoutes);
+
 app.use("/api/loans", loanRoutes);
+
 app.use("/api/guarantors", guarantorRoutes);
+
 app.use("/api/notifications", notificationRoutes);
+
 app.use("/api/complaints", complaintRoutes);
+
 app.use("/api/admin", adminRoutes);
+
 app.use("/api/finance", financeRoutes);
+
 app.use("/api/support", supportRoutes);
+
 app.use("/api/referrals", referralRoutes);
+
 app.use("/api/scores", scoreRoutes);
+
 app.use("/api/tier", tierRoutes);
+
 app.use("/api/payments", paymentRoutes);
+
 app.use("/api/settings", systemSettingsRoutes);
 
 // ==========================================================================
-// 3. GLOBAL ERROR HANDLER
+// 9. HEALTH CHECK
 // ==========================================================================
-app.use((err, req, res, next) => {
-  const statusCode = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
-  res.status(statusCode).json({
-    success: false,
-    message: err.message,
-    stack: process.env.NODE_ENV === "production" ? null : err.stack,
+
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "SocketMonie API is running 🚀",
+    environment: process.env.NODE_ENV || "development",
+  });
+});
+
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "API is healthy",
   });
 });
 
 // ==========================================================================
-// 4. DATABASE & SERVER BOOTSTRAP
+// 10. 404 HANDLER
 // ==========================================================================
-db()
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.method} ${req.originalUrl} not found`,
+  });
 });
+
+// ==========================================================================
+// 11. GLOBAL ERROR HANDLER
+// ==========================================================================
+
+app.use((err, req, res, next) => {
+  console.error("❌ Server Error:", err);
+
+  const statusCode =
+    res.statusCode && res.statusCode !== 200
+      ? res.statusCode
+      : 500;
+
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || "Internal Server Error",
+
+    // Only expose stack traces during development
+    stack:
+      process.env.NODE_ENV === "production"
+        ? null
+        : err.stack,
+  });
+});
+
+// ==========================================================================
+// 12. DATABASE & SERVER BOOTSTRAP
+// ==========================================================================
+
+const startServer = async () => {
+  try {
+    await db();
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
+      console.log(`🔐 CORS enabled for:`);
+      allowedOrigins.forEach((origin) => {
+        console.log(`   - ${origin}`);
+      });
+    });
+  } catch (error) {
+    console.error("❌ Failed to start server:", error);
+    process.exit(1);
+  }
+};
+
+startServer();
+
+module.exports = app;
