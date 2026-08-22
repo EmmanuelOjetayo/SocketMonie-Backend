@@ -8,7 +8,7 @@ const authorize = require("../Middleware/authorize"); // Role guard middleware
 const { strictFinancialLimiter } = require("../Middleware/rateLimiter");
 // All loan routes require authentication
 loanRoutes.use(protect);
-loanRoutes.use(authorize("super_admin", "financial_manager", "member"));
+loanRoutes.use(authorize("super_admin", "finance_manager", "member"));
 // loanRoutes.use(strictFinancialLimiter);
 // --------------------------------------------------------------------------
 // LOAN ENQUIRIES (Protected by Membership Paywall)
@@ -66,7 +66,7 @@ loanRoutes.post(
 // --------------------------------------------------------------------------
 loanRoutes.put(
   "/approve/:loanId", 
-  authorize("super_admin", "financial_manager"), 
+  authorize("super_admin", "finance_manager"), 
   loanController.approveAndDisburseLoan
 );
 

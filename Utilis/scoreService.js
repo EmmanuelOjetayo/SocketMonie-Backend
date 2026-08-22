@@ -7,11 +7,15 @@ async function calculateScore(userId) {
     const user = await User.findById(userId);
     if (!user) throw new Error("User not found");
 
+    const weights = typeof ScoreHistory.getScoringWeights === "function"
+        ? ScoreHistory.getScoringWeights()
+        : { savingsDisciplineWeight: 35, loanRepaymentWeight: 35, communityTrustWeight: 30 };
+
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
     sixMonthsAgo.setHours(0, 0, 0, 0);
 
-    let savingsConsistencyScore = 0;
+    // 1. Savings Discipline (Scale 0 - 100 -> scaled by savingsDisciplineWeight)
     const monthlyCommitment = user.monthlySavingsCommitment || 5000;
     const deposits = await Savings.find({
         userId: userId,
@@ -38,28 +42,12 @@ async function calculateScore(userId) {
         monthCount++;
     }
     const averageCompletion = monthCount > 0 ? totalCompletion / monthCount : 0;
-    savingsConsistencyScore = Math.round((averageCompletion / 100) * 35);
+    const savingsDisciplineScore = Math.round((averageCompletion / 100) * weights.savingsDisciplineWeight);
 
-    let savingsGrowthScore = 0;
-    const months = Object.keys(monthMap).sort();
-    if (months.length >= 2) {
-        const firstMonth = months[0];
-        const lastMonth = months[months.length - 1];
-        const firstTotal = monthMap[firstMonth] || 0;
-        const lastTotal = monthMap[lastMonth] || 0;
-        if (lastTotal > firstTotal) savingsGrowthScore = 15;
-        else if (lastTotal === firstTotal) savingsGrowthScore = 10;
-        else savingsGrowthScore = 5;
-    } else if (months.length === 1) {
-        savingsGrowthScore = 10;
-    } else {
-        savingsGrowthScore = 0;
-    }
-
-    let loanRepaymentScore = 0;
+    // 2. Loan Repayment Behavior (Scale 0 - 100 -> scaled by loanRepaymentWeight)
+    let loanRepaymentRaw = 70; // Default neutral for new borrowers
     const loans = await Loan.find({ userId: userId });
-    const totalLoans = loans.length;
-    if (totalLoans > 0) {
+    if (loans.length > 0) {
         let completedOnTime = 0;
         let completedLate = 0;
         let defaulted = 0;
@@ -75,73 +63,39 @@ async function calculateScore(userId) {
                 });
                 if (onTime) completedOnTime++;
                 else completedLate++;
-            } else if (loan.status === "defaulted_60_days") {
+            } else if (loan.status.includes("defaulted") || loan.status.includes("restricted")) {
                 defaulted++;
             }
         });
-        let baseScore = 0;
-        if (completedOnTime > 0) {
-            baseScore = Math.min(25, completedOnTime * 10);
-        } else if (completedLate > 0) {
-            baseScore = Math.min(15, completedLate * 5);
-        }
-        const defaultPenalty = Math.min(25, defaulted * 8);
-        loanRepaymentScore = Math.max(0, baseScore - defaultPenalty);
-    } else {
-        loanRepaymentScore = 12;
+        const base = (completedOnTime * 30) + (completedLate * 15);
+        const penalty = defaulted * 40;
+        loanRepaymentRaw = Math.max(0, Math.min(100, 70 + base - penalty));
     }
+    const loanRepaymentScore = Math.round((loanRepaymentRaw / 100) * weights.loanRepaymentWeight);
 
-    let withdrawalBehaviourScore = 10;
-    const withdrawals = await Savings.find({
-        userId: userId,
-        type: "withdrawal",
-        status: "completed",
-    });
-    const totalWithdrawals = withdrawals.length;
-    if (totalWithdrawals > 0) {
-        const monthsWithWithdrawal = new Set();
-        withdrawals.forEach(w => {
-            monthsWithWithdrawal.add(`${w.createdAt.getFullYear()}-${w.createdAt.getMonth()}`);
-        });
-        const ratio = monthsWithWithdrawal.size / Math.max(1, months.length);
-        if (ratio > 0.5) {
-            withdrawalBehaviourScore = Math.max(2, 10 - (ratio * 8));
-        } else if (ratio > 0.3) {
-            withdrawalBehaviourScore = Math.max(5, 10 - (ratio * 5));
-        } else {
-            withdrawalBehaviourScore = 10;
-        }
-    }
-
-    let profileCompletionScore = 0;
-    const requiredFields = ['fullName', 'email', 'phone', 'dateOfBirth', 'gender', 'address', 'stateOfOrigin', 'occupation', 'isPinSet'];
-    let completed = 0;
-    requiredFields.forEach(field => {
-        if (user[field] && user[field] !== null && user[field] !== '') completed++;
-    });
-    if (user.kycStatus === 'approved') completed += 2;
-    if (user.bankDetails?.verified) completed += 1;
-    if (user.nin) completed += 1;
-    if (user.bvn) completed += 1;
-    if (user.selfieUrl) completed += 1;
-    const maxScore = requiredFields.length + 6;
-    profileCompletionScore = Math.round((completed / maxScore) * 5);
-
-    let communityTrustScore = 10;
+    // 3. Community Trust (Scale 0 - 100 -> scaled by communityTrustWeight, based on referrals and complaint logs)
+    const referralCount = await User.countDocuments({ referredBy: userId });
     const complaints = await require("../Models/ComplaintModel").find({ userId: userId, status: "resolved" });
-    if (complaints.length > 0) {
-        communityTrustScore = Math.max(2, 10 - (complaints.length * 2));
-    }
+    const trustBase = Math.min(80, 50 + (referralCount * 10)) - (complaints.length * 5);
+    const communityTrustRaw = Math.max(0, Math.min(100, trustBase));
+    const communityTrustScore = Math.round((communityTrustRaw / 100) * weights.communityTrustWeight);
 
     const breakdown = {
-        savingsConsistency: Math.round(savingsConsistencyScore),
-        savingsGrowth: Math.round(savingsGrowthScore),
-        loanRepayment: Math.round(loanRepaymentScore),
-        withdrawalBehaviour: Math.round(withdrawalBehaviourScore),
-        profileCompletion: Math.round(profileCompletionScore),
-        communityTrust: Math.round(communityTrustScore),
+        savingsConsistency: savingsDisciplineScore,
+        savingsGrowth: Math.round(savingsDisciplineScore * 0.4),
+        loanRepayment: loanRepaymentScore,
+        withdrawalBehaviour: Math.round(weights.savingsDisciplineWeight * 0.3),
+        profileCompletion: 5,
+        communityTrust: communityTrustScore,
     };
-    const overallScore = Object.values(breakdown).reduce((a, b) => a + b, 0);
+
+    const currentMonthPerformance = savingsDisciplineScore + loanRepaymentScore + communityTrustScore;
+
+    // CGPA Style Cumulative Aggregate:
+    // Existing score carries 85% weight, current monthly performance adds 15% delta
+    const currentSocketScore = user.socketScore > 0 ? user.socketScore : 50;
+    const overallScore = Math.min(100, Math.max(0, Math.round((currentSocketScore * 0.85) + (currentMonthPerformance * 0.15))));
+
     return { breakdown, overallScore };
 }
 

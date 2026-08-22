@@ -20,7 +20,7 @@ const savingsSchema = new mongoose.Schema(
     },
     method: {
       type: String,
-      enum: ["bank_transfer", "card", "wallet", "flutterwave", "Bank Transfer", "Card", "Wallet"],
+      enum: ["bank_transfer", "card", "wallet", "flutterwave", "paystack", "flutterwave_payout", "Bank Transfer", "Card", "Wallet"],
       default: "Bank Transfer",
     },
     status: {
@@ -39,7 +39,14 @@ const savingsSchema = new mongoose.Schema(
     isLocked: { type: Boolean, default: true },
     
     reference: { type: String, default: null },
+    // Provider transaction reference (Flutterwave or Paystack — field name kept
+    // for backward compatibility with existing records/queries).
     flutterwaveRef: { type: String, default: null },
+    // Provider transaction id used as the hard duplicate-processing guard for
+    // loan repayments. unique+sparse means two documents can never share a
+    // real transactionId, even under a race condition — this backs up the
+    // application-level "already processed?" checks with a DB-level constraint.
+    transactionId: { type: String, default: null, unique: true, sparse: true },
 
     // For withdrawal requests
     bankDetails: {

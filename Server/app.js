@@ -5,6 +5,9 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const hpp = require("hpp");
+// const mongoSanitize = require("../Middleware/mongoSanitize");
+const dns = require("dns");
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 
 const { globalLimiter } = require("../Middleware/rateLimiter");
 const db = require("../Config/db");
@@ -74,7 +77,7 @@ const corsOptions = {
     );
   },
 
-  credentials: true,
+  // credentials: true,
 
   methods: [
     "GET",
@@ -112,7 +115,18 @@ app.use(cors(corsOptions));
 // 6. BODY PARSERS
 // ==========================================================================
 
-app.use(express.json());
+// Capture the raw request body bytes as they arrive, BEFORE JSON parsing.
+// Paystack webhook signatures are an HMAC-SHA512 of the exact raw body —
+// re-serializing req.body with JSON.stringify() after parsing does NOT
+// reliably reproduce the same bytes (key order, spacing, unicode escaping
+// can all differ), so the raw buffer must be preserved for verification.
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 
 app.use(
   express.urlencoded({
@@ -126,6 +140,9 @@ app.use(
 
 // Prevent HTTP Parameter Pollution
 app.use(hpp());
+
+// Prevent NoSQL / MongoDB operator injection (e.g. { "$gt": "" } in req.body/query)
+// app.use(mongoSanitize());
 
 // Global rate limiter
 // CORS/preflight is handled BEFORE this middleware.

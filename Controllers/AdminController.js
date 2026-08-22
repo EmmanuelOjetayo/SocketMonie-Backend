@@ -325,7 +325,7 @@ exports.getLoans = async (req, res, next) => {
 exports.getLoanById = async (req, res, next) => {
   try {
     const { loanId } = req.params;
-    const loan = await Loan.findById(loanId).populate("userId", "fullName email phone address occupation");
+    const loan = await Loan.findById(loanId).populate("userId", "fullName email phone address occupation bankDetails kycStatus");
     if (!loan) return res.status(404).json({ success: false, message: "Loan not found." });
     return res.status(200).json({ success: true, loan });
   } catch (err) { next(err); }
@@ -353,94 +353,15 @@ exports.getLoanById = async (req, res, next) => {
  * - Skip mode (FLW_SKIP_PAYOUT=true) → no Flutterwave call, for dev/testing
  */
 exports.approveLoan = async (req, res, next) => {
-  try {
-    const { loanId } = req.params;
-
-    const loan = await Loan.findOne({
-      _id: loanId,
-      status: "pending_review",
-    }).populate("userId", "fullName email phone kycStatus bankDetails");
-
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found or already processed.",
-      });
-    }
-
-    // Optional validations
-    if (loan.userId.kycStatus !== "approved") {
-      return res.status(400).json({
-        success: false,
-        message: "Member KYC must be approved before loan approval.",
-      });
-    }
-
-    // Generate repayment schedule
-    const disbursedAt = new Date();
-
-    const monthlyInstallment =
-      loan.totalRepayable / loan.durationMonths;
-
-    const installments = [];
-
-    for (let i = 1; i <= loan.durationMonths; i++) {
-      const dueDate = new Date(disbursedAt);
-      dueDate.setMonth(dueDate.getMonth() + i);
-
-      installments.push({
-        installmentNumber: i,
-        dueDate,
-        amountDue: monthlyInstallment,
-        amountPaid: 0,
-        status: "unpaid",
-      });
-    }
-
-    // Activate loan
-    loan.status = "active";
-    loan.approvedAt = new Date();
-    loan.approvedBy = req.user._id;
-
-    loan.disbursedAt = disbursedAt;
-    loan.disbursedBy = req.user._id;
-
-    loan.installments = installments;
-
-    await loan.save();
-
-    // Notification
-    await createNotification({
-      userId: loan.userId._id,
-      type: "loan",
-      title: "Loan Approved",
-      message: `Congratulations! Your loan of ₦${loan.principalAmount.toLocaleString()} has been approved and activated.`,
-    });
-
-    // Audit Log
-    await logAudit({
-      userId: req.user._id,
-      userEmail: req.user.email,
-      userRole: req.user.role,
-      action: "loan_approved",
-      targetType: "loan",
-      targetId: loan._id,
-      details: {
-        amount: loan.principalAmount,
-        member: loan.userId._id,
-      },
-      ipAddress: req.ip,
-      userAgent: req.headers["user-agent"],
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Loan approved successfully.",
-      loan,
-    });
-  } catch (err) {
-    next(err);
-  }
+  // Delegates to the single real implementation, which validates KYC and
+  // bank details and actually disburses funds via initiateTransfer().
+  // This function used to duplicate (and silently skip) that logic --
+  // it activated loans and generated a full repayment schedule without
+  // ever transferring money to the member's bank account. Rather than
+  // maintain two diverging "approve a loan" implementations, this route
+  // now calls the correct one directly.
+  const loanController = require("./LoanController");
+  return loanController.approveAndDisburseLoan(req, res, next);
 };
 
 exports.rejectLoan = async (req, res, next) => {
@@ -748,56 +669,68 @@ exports.getPendingWithdrawals = async (req, res, next) => {
 exports.approveWithdrawal = async (req, res, next) => {
   try {
     const { id } = req.params;
+
     const withdrawal = await Savings.findById(id);
+
     if (!withdrawal) {
-      return res.status(404).json({ success: false, message: "Withdrawal not found." });
+      return res.status(404).json({
+        success: false,
+        message: "Withdrawal not found.",
+      });
     }
+
     if (withdrawal.status !== "pending_approval") {
-      return res.status(400).json({ success: false, message: "Withdrawal is not pending approval." });
-    }
-    if (!withdrawal.bankDetails || !withdrawal.bankDetails.bankCode || !withdrawal.bankDetails.accountNumber) {
-      return res.status(400).json({ success: false, message: "Missing bank details." });
+      return res.status(400).json({
+        success: false,
+        message: "Withdrawal is not pending approval.",
+      });
     }
 
     const user = await User.findById(withdrawal.userId);
+
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found." });
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
     }
 
-    const { initiateTransfer } = require("../Utilis/flutterwave");
-    const reference = `WTH_${Date.now()}_${withdrawal.userId.toString().slice(-6)}`;
+    const fee = withdrawal.fee || 0;
+    const totalDeducted = withdrawal.amount + fee;
 
-    const transfer = await initiateTransfer(
-      withdrawal.bankDetails.bankCode,
-      withdrawal.bankDetails.accountNumber,
-      withdrawal.amount,
-      reference,
-      `Socket Moni Withdrawal - ${user.fullName}`
-    );
+    // Deduct from user's savings
+    // IMPORTANT: use your actual savings balance field here.
+    user.savingsBalance -= totalDeducted;
 
-    await Savings.findByIdAndUpdate(id, {
-      $set: {
-        status: "pending",
-        reference: reference,
-        flutterwaveRef: transfer.data?.id || null,
-        approvedAt: new Date(),
-      },
-    });
+    if (user.savingsBalance < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient savings balance.",
+      });
+    }
+
+    await user.save();
+
+    // Finalize withdrawal
+    withdrawal.status = "completed";
+    withdrawal.approvedAt = new Date();
+    withdrawal.completedAt = new Date();
+    withdrawal.totalDeducted = totalDeducted;
+
+    await withdrawal.save();
 
     await createNotification({
       userId: withdrawal.userId,
       type: "savings",
       title: "Withdrawal Approved",
-      message: `Your withdrawal of ₦${withdrawal.amount.toLocaleString()} has been approved and is being processed.`,
+      message: `Your withdrawal of ₦${withdrawal.amount.toLocaleString()} has been approved successfully.`,
       data: {
-        action: "withdrawal_approved",
+        action: "withdrawal_successful",
         withdrawalId: withdrawal._id,
         amount: withdrawal.amount,
-        fee: withdrawal.fee || 0,
-        totalDeducted: withdrawal.amount + (withdrawal.fee || 0),
-        destinationBank: withdrawal.bankDetails,
-        status: "pending",
-        reference,
+        fee,
+        totalDeducted,
+        status: "successful",
       },
     });
 
@@ -805,34 +738,38 @@ exports.approveWithdrawal = async (req, res, next) => {
       userId: req.user._id,
       userEmail: req.user.email,
       userRole: req.user.role,
-      action: 'withdrawal_approve',
-      targetType: 'savings',
+      action: "withdrawal_approve",
+      targetType: "savings",
       targetId: id,
-      details: { amount: withdrawal.amount, flutterwaveRef: transfer.data?.id, reference, approvedBy: req.user._id },
+      details: {
+        amount: withdrawal.amount,
+        fee,
+        totalDeducted,
+        approvedBy: req.user._id,
+      },
       ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
+      userAgent: req.headers["user-agent"],
     });
 
     return res.status(200).json({
       success: true,
-      message: "Withdrawal approved and payout initiated.",
-      data: { withdrawal: await Savings.findById(id), transferId: transfer.data?.id, reference },
+      message: "Withdrawal approved successfully.",
+      data: {
+        withdrawal,
+        amount: withdrawal.amount,
+        fee,
+        totalDeducted,
+        status: "successful",
+      },
     });
+
   } catch (err) {
     console.error("Approve withdrawal error:", err);
-    try {
-      const { id } = req.params;
-     // AFTER
-      const stuck = await Savings.findById(id).select("status flutterwaveRef");
-      if (stuck && stuck.status === "pending" && !stuck.flutterwaveRef) {
 
-        await Savings.findByIdAndUpdate(id, { $set: { status: "pending_approval", approvedAt: null } });
-        console.log(`Rolled back withdrawal ${id} to pending_approval after error`);
-      }
-    } catch (rollbackErr) {
-      console.error("Rollback failed:", rollbackErr);
-    }
-    return res.status(500).json({ success: false, message: err.message || "Failed to process payout." });
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to approve withdrawal.",
+    });
   }
 };
 

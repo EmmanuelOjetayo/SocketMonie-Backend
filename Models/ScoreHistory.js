@@ -23,4 +23,12 @@ const ScoreHistorySchema = new mongoose.Schema({
     trigger: { type: String, default: null },
 }, { timestamps: true });
 
+ScoreHistorySchema.statics.getScoringWeights = function () {
+    return {
+        savingsDisciplineWeight: 35,
+        loanRepaymentWeight: 35,
+        communityTrustWeight: 30,
+    };
+};
+
 module.exports = mongoose.model("ScoreHistory", ScoreHistorySchema);

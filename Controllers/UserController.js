@@ -7,15 +7,24 @@ const forgotPasswordTemplate = require("../Utilis/emailTemplates/forgotPassword"
 
 const GetUserInfo = async (req, res) => {
   try {
-    const user = await Users.findById(req.user._id).select(
+    const userObj = await Users.findById(req.user._id).select(
       "-password -transactionPin -pinResetOTP -pinResetOTPExpiresAt"
-    );
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-    return res.status(200).json({ success: true, data: { user } });
+    ).lean();
+    if (!userObj) return res.status(404).json({ success: false, message: "User not found" });
+
+    userObj.bvn = maskId(userObj.bvn);
+    userObj.nin = maskId(userObj.nin);
+
+    return res.status(200).json({ success: true, data: { user: userObj } });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+// Mask all but the last 4 digits of a BVN/NIN for any response a regular
+// member's own session can see. Full values are only ever readable through
+// an explicit admin-only endpoint (see AdminController), never here.
+const maskId = (value) => (value ? `********${String(value).slice(-4)}` : null);
 
 
 const kycSchema = joi.object({
@@ -43,7 +52,7 @@ const KYCUpload = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'KYC Document uploaded successfully!',
-      data: { documentType: updatedUser.documentType, documentUrl: updatedUser.documentUrl, kycStatus: updatedUser.kycStatus, bvn: updatedUser.bvn, nin: updatedUser.nin },
+      data: { documentType: updatedUser.documentType, documentUrl: updatedUser.documentUrl, kycStatus: updatedUser.kycStatus, bvn: maskId(updatedUser.bvn), nin: maskId(updatedUser.nin) },
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Failed to upload KYC document', error: err.message });
@@ -115,7 +124,7 @@ const updatedUser = await Users.findByIdAndUpdate(
  },
  {
   new:true,
-  select:"-password -transactionPin -pinResetOTP -pinResetOTPExpiresAt"
+  select:"-password -transactionPin -pinResetOTP -pinResetOTPExpiresAt -bvn -nin"
  }
 );
 
@@ -263,7 +272,7 @@ req.user._id,
 update,
 {
 new:true,
-select:"-password"
+select:"-password -bvn -nin"
 }
 );
 

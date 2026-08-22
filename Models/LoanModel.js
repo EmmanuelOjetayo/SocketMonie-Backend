@@ -271,7 +271,7 @@ guarantor: {
       },
     ],
 
-    // Flutterwave Payout
+    // Paystack Payout
     payoutReference: {
       type: String,
       default: null,

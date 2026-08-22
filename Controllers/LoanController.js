@@ -8,13 +8,14 @@ const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const crypto = require("crypto");
 const Guarantor = require("../Models/GuarantorModel"); // Adjust path to your Guarantor model
-
+const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY
 // Helper: Calculate net completed savings
 const getNetSavings = async (userId) => {
   const completedSavings = await Savings.find({ userId, status: "completed" });
   return completedSavings.reduce((sum, item) => {
     if (item.type === "withdrawal") return sum - item.amount;
-    return sum + item.amount;
+    if (item.type === "deposit") return sum + item.amount;
+    return sum;
   }, 0);
 };
 
@@ -493,6 +494,14 @@ exports.applyForLoan = async (req, res, next) => {
 // PUT /api/loans/approve/:loanId
 exports.approveAndDisburseLoan = async (req, res, next) => {
   try {
+    if (
+      !["super_admin", "finance_manager"].includes(req.user.role)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized. Only authorized finance staff can approve loans.",
+      });
+    }
     const { loanId } = req.params;
 
     const loan = await Loan.findById(loanId);
@@ -526,9 +535,7 @@ exports.approveAndDisburseLoan = async (req, res, next) => {
         message: "All guarantors must accept this loan before approval.",
       });
     }
-    if (!loan.guarantors?.length && loan.guarantor.status !== "accepted") {
-      return res.status(400).json({ success: false, message: "Guarantor has not accepted this loan yet." });
-    }
+
 
     const disbursedAt = new Date();
 
@@ -576,7 +583,7 @@ exports.approveAndDisburseLoan = async (req, res, next) => {
     loan.reviewedAt = new Date();
     loan.approvedBy = req.user._id;
 
-    loan.payoutStatus = "pending";
+    loan.payoutStatus = "completed";
     loan.payoutReference = `PAYOUT-${Date.now()}`;
 
     loan.installments = installments;
@@ -585,17 +592,29 @@ exports.approveAndDisburseLoan = async (req, res, next) => {
     loan.amountPaid = 0;
     loan.remainingBalance = loan.totalRepayable;
 
-    if (loan.guarantors?.length === 3) {
-      loan.guarantors.forEach((guarantor) => {
-        guarantor.status = "active";
-        guarantor.approvedAt = new Date();
-        guarantor.remainingGuaranteedBalance = loan.totalRepayable;
-      });
-    } else if (loan.guarantor) {
-      loan.guarantor.status = "active";
-      loan.guarantor.approvedAt = new Date();
-      loan.guarantor.remainingGuaranteedBalance = loan.totalRepayable;
-    }
+// ===========================
+// SYNC ACTIVE GUARANTORS
+// ===========================
+
+// Guarantors were already activated individually
+// when they accepted their guarantee requests.
+//
+// Admin approval does NOT activate them.
+// Admin approval activates the LOAN.
+
+if (loan.guarantors?.length === 3) {
+  loan.guarantors.forEach((guarantor) => {
+    guarantor.status = "active";
+
+    guarantor.remainingGuaranteedBalance =
+      loan.remainingBalance || loan.totalRepayable;
+  });
+} else if (loan.guarantor) {
+  loan.guarantor.status = "active";
+
+  loan.guarantor.remainingGuaranteedBalance =
+    loan.remainingBalance || loan.totalRepayable;
+}
 
     // Track timeline audit history if array exists on schema
     if (Array.isArray(loan.timeline)) {
@@ -619,6 +638,24 @@ exports.approveAndDisburseLoan = async (req, res, next) => {
     // Notifications
     // ===========================
 
+    // Collect every guarantor's userId regardless of which shape this loan
+    // uses: the legacy single `guarantor` object, or the `guarantors[]`
+    // array (the one applyForLoan actually populates — 3 guarantors).
+    // Previously this only ever read `loan.guarantor.userId`, which is the
+    // wrong field name (`guarantorUserId`) AND the wrong object for the
+    // array case, so guarantors were never actually notified.
+    const guarantorUserIds = [];
+
+    if (loan.guarantor?.guarantorUserId) {
+      guarantorUserIds.push(loan.guarantor.guarantorUserId);
+    }
+
+    if (Array.isArray(loan.guarantors)) {
+      loan.guarantors.forEach((g) => {
+        if (g?.userId) guarantorUserIds.push(g.userId);
+      });
+    }
+
     await Promise.all([
       createNotification({
         userId: loan.userId,
@@ -626,12 +663,14 @@ exports.approveAndDisburseLoan = async (req, res, next) => {
         title: "Loan Approved",
         message: `Congratulations! Your loan of ₦${loan.principalAmount.toLocaleString()} has been approved.`,
       }),
-      createNotification({
-        userId: loan.guarantor.userId,
-        type: "guarantor",
-        title: "Guarantee Activated",
-        message: `The loan you guaranteed for ${loan.loanNumber} has been approved and is now active.`,
-      }),
+      ...guarantorUserIds.map((guarantorUserId) =>
+        createNotification({
+          userId: guarantorUserId,
+          type: "guarantor",
+          title: "Guarantee Activated",
+          message: `The loan you guaranteed for ${loan.loanNumber} has been approved and is now active.`,
+        })
+      ),
     ]);
 
     return res.status(200).json({
@@ -651,7 +690,7 @@ const processLoanRepayment = async ({
   transactionId,
   paymentAmount,
   paymentReference,
-  paymentMethod = "flutterwave",
+  paymentMethod = "paystack",
   verifiedData,
 }) => {
   const session = await Loan.startSession();
@@ -683,10 +722,12 @@ const processLoanRepayment = async ({
       throw new Error("Loan is not active or eligible for repayment.");
     }
 
-    // Prevent duplicate processing
-    const existing = await Savings.findOne({ transactionId }).session(session);
+    // Prevent duplicate repayment processing on the loan
+    const alreadyProcessed = (loan.repaymentHistory || []).some(
+      (r) => String(r.transactionId) === String(transactionId) || (r.reference && r.reference === paymentReference)
+    );
 
-    if (existing) {
+    if (alreadyProcessed) {
       await session.abortTransaction();
       session.endSession();
       return loan;
@@ -790,28 +831,49 @@ const processLoanRepayment = async ({
 
     loan.lastPaymentAt = new Date();
 
-    await loan.save({ session });
+    loan.repaymentHistory.push({
+  amount: payment,
+  method: paymentMethod,
+  reference: paymentReference,
+  transactionId,
+  paidAt: new Date(),
+});
+
+await loan.save({ session });
 
     // ==========================
     // Save repayment transaction
     // ==========================
 
-    await Savings.create(
-      [
-        {
-          userId: loan.userId,
-          amount: Number(paymentAmount),
-          type: "loan_repayment",
-          method: paymentMethod,
-          status: "completed",
-          reference: paymentReference,
-          transactionId,
-          loanId: loan._id,
-          metadata: verifiedData,
-        },
-      ],
-      { session }
-    );
+const repaymentTransaction = await Savings.findOne({
+  reference: paymentReference,
+  type: "loan_repayment",
+}).session(session);
+
+if (repaymentTransaction) {
+  repaymentTransaction.status = "completed";
+  repaymentTransaction.amount = payment;
+  repaymentTransaction.transactionId = transactionId;
+  repaymentTransaction.loanId = loan._id;
+
+  await repaymentTransaction.save({ session });
+} else {
+  await Savings.create(
+    [
+      {
+        userId: loan.userId,
+        amount: payment,
+        type: "loan_repayment",
+        method: paymentMethod,
+        status: "completed",
+        reference: paymentReference,
+        transactionId,
+        loanId: loan._id,
+      },
+    ],
+    { session }
+  );
+}
 
     await session.commitTransaction();
     session.endSession();
@@ -862,16 +924,32 @@ const processLoanRepayment = async ({
       }),
     ];
 
-    // Notify Guarantor when loan is fully settled
-    if (loan.status === "completed" && loan.guarantor?.userId) {
-      notifications.push(
-        createNotification({
-          userId: loan.guarantor.userId,
-          type: "guarantor",
-          title: "Guarantee Released",
-          message: `The loan you guaranteed for ${loan.loanNumber} has been fully repaid. Your guarantee liability has been released.`,
-        })
-      );
+    // Notify every guarantor when the loan is fully settled (handles both
+    // the legacy single-guarantor field and the guarantors[] array that
+    // applyForLoan actually populates).
+    if (loan.status === "completed") {
+      const releasedGuarantorIds = [];
+
+      if (loan.guarantor?.guarantorUserId) {
+        releasedGuarantorIds.push(loan.guarantor.guarantorUserId);
+      }
+
+      if (Array.isArray(loan.guarantors)) {
+        loan.guarantors.forEach((g) => {
+          if (g?.userId) releasedGuarantorIds.push(g.userId);
+        });
+      }
+
+      releasedGuarantorIds.forEach((guarantorUserId) => {
+        notifications.push(
+          createNotification({
+            userId: guarantorUserId,
+            type: "guarantor",
+            title: "Guarantee Released",
+            message: `The loan you guaranteed for ${loan.loanNumber} has been fully repaid. Your guarantee liability has been released.`,
+          })
+        );
+      });
     }
 
     await Promise.all(notifications);
@@ -940,12 +1018,30 @@ exports.initializeLoanRepayment = async (req, res, next) => {
 
     const tx_ref = `LRP_${Date.now()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
+    // Persist a pending record so the webhook can reconcile this payment
+    // even if the client never returns to call /repay/verify (browser
+    // closed, network dropped, app killed, etc.) — without this, a
+    // successful Paystack charge with no matching client call was
+    // previously unrecoverable.
+    await Savings.create({
+      userId,
+      loanId: loan._id,
+      amount,
+      type: "loan_repayment",
+      method: "paystack",
+      status: "pending",
+      reference: tx_ref,
+    });
+
+    console.log(PAYSTACK_PUBLIC_KEY, tx_ref, amount);
     return res.status(200).json({
       success: true,
       data: {
-        publicKey: process.env.FLW_PUBLIC_KEY,
-        tx_ref,
+        publicKey: process.env.PAYSTACK_PUBLIC_KEY,
+        reference: tx_ref,
+        tx_ref, // kept for any frontend code still reading tx_ref
         amount,
+        amountKobo: Math.round(amount * 100),
         currency: "NGN",
 
         customer: {
@@ -960,7 +1056,7 @@ exports.initializeLoanRepayment = async (req, res, next) => {
           logo: process.env.APP_LOGO || "",
         },
 
-        meta: {
+        metadata: {
           paymentType: "loan_repayment",
           loanId: loan._id.toString(),
           userId: userId.toString(),
@@ -975,26 +1071,32 @@ exports.initializeLoanRepayment = async (req, res, next) => {
 };
 
 
-const { verifyPayment } = require("../Utilis/flutterwave");
+const { verifyPayment } = require("../Utilis/Paystack");
 
 exports.verifyLoanRepayment = async (req, res, next) => {
   try {
     const userId = req.user._id;
-    const { loanId, transactionId, tx_ref } = req.body;
+    const { loanId, reference, tx_ref, transactionId } = req.body;
+
+    // Paystack verifies by `reference` -- a single string, unlike
+    // 's separate numeric transactionId + tx_ref pair. Accept
+    // any of the field names the frontend might still be sending during
+    // rollout, but they must all point at the same reference.
+    const paymentRef = reference || tx_ref || transactionId;
 
     console.log("VERIFY BODY:", req.body);
 
-    if (!loanId || !transactionId || !tx_ref) {
+    if (!loanId || !paymentRef) {
       return res.status(400).json({
         success: false,
-        message: "loanId, transactionId, and tx_ref are required.",
+        message: "loanId and reference are required.",
       });
     }
 
-    // Verify payment with Flutterwave
-    const verification = await verifyPayment(transactionId);
+    // Verify payment with Paystack
+    const verification = await verifyPayment(paymentRef);
 
-    console.log("FLW Verification:", verification);
+    console.log("Paystack Verification:", verification);
 
     if (!verification || verification.status !== "success") {
       return res.status(400).json({
@@ -1037,7 +1139,7 @@ exports.verifyLoanRepayment = async (req, res, next) => {
       });
     }
 
-    if (paymentReference !== tx_ref) {
+    if (paymentReference !== paymentRef) {
       return res.status(400).json({
         success: false,
         message: "Payment reference mismatch.",
@@ -1071,13 +1173,20 @@ exports.verifyLoanRepayment = async (req, res, next) => {
       });
     }
 
+    // Mark the pending Savings record (created in initializeLoanRepayment)
+    // completed here too, so the direct-verify path and the webhook
+    // fallback path leave the record in the same state either way.
+    await Savings.updateOne(
+      { reference: paymentReference, type: "loan_repayment", status: "pending" },
+      { $set: { status: "completed", transactionId: String(payment.id), amount: paymentAmount } }
+    );
 
     const updatedLoan = await processLoanRepayment({
       loanId: loan._id,
-      transactionId: String(payment.id || transactionId),
+      transactionId: String(payment.id || paymentRef),
       paymentAmount,
       paymentReference,
-      paymentMethod: "flutterwave",
+      paymentMethod: "paystack",
       verifiedData: payment,
     });
 

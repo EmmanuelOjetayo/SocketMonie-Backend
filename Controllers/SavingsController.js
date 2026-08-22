@@ -14,13 +14,15 @@ const {
 const {
   initializePayment,
   verifyPayment,
-} = require("../Utilis/flutterwave");
+  PAYSTACK_PUBLIC_KEY,
+} = require("../Utilis/Paystack");
 
 const getNetSavings = async (userId) => {
   const completedSavings = await Savings.find({ userId, status: "completed" });
   return completedSavings.reduce((sum, item) => {
     if (item.type === "withdrawal") return sum - item.amount;
-    return sum + item.amount;
+    if (item.type === "deposit") return sum + item.amount;
+    return sum;
   }, 0);
 };
 /**
@@ -81,7 +83,11 @@ const getSavingsSummary = async (req, res, next) => {
   try {
     const userId = req.user._id;
     const savingsList = await Savings.find({ userId, status: "completed" }).sort({ createdAt: -1 });
-    const totalSaved = savingsList.reduce((acc, curr) => acc + curr.amount, 0);
+    const totalSaved = savingsList.reduce((acc, curr) => {
+      if (curr.type === "withdrawal") return acc - curr.amount;
+      if (curr.type === "deposit") return acc + curr.amount;
+      return acc;
+    }, 0);
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -366,29 +372,28 @@ const initializeMembershipFee = async (req, res, next) => {
     }
 
     if (user.membershipFeePaid) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Membership fee has already been paid for this account." 
+      return res.status(400).json({
+        success: false,
+        message: "Membership fee has already been paid for this account."
       });
     }
 
-    // Unique transaction reference for Flutterwave
-  // Generate Flutterwave transaction reference
-const tx_ref = `MEM_${Date.now()}_${user._id}`;
+    // Unique transaction reference for Paystack
+    const tx_ref = `MEM_${Date.now()}_${user._id}`;
 
-// Save reference BEFORE opening Flutterwave
-user.membershipFeeTxRef = tx_ref;
-await user.save();
+    // Save reference BEFORE opening the Paystack popup
+    user.membershipFeeTxRef = tx_ref;
+    await user.save();
 
-//  Flutterwave payment
-
-return res.status(200).json({
-  success: true,
+    return res.status(200).json({
+      success: true,
       message: "Membership fee payment initialized.",
       data: {
-        publicKey: process.env.FLW_PUBLIC_KEY,
-        tx_ref,
+        publicKey: PAYSTACK_PUBLIC_KEY,
+        reference: tx_ref,
+        tx_ref, // kept for any frontend code still reading tx_ref
         amount: MEMBERSHIP_FEE_AMOUNT,
+        amountKobo: Math.round(MEMBERSHIP_FEE_AMOUNT * 100),
         currency: "NGN",
         customer: {
           email: user.email,
@@ -400,7 +405,6 @@ return res.status(200).json({
           description: "Pay 1000 NGN to continue using the service.",
           logo: process.env.APP_LOGO || "",
         },
-        payment_options: "card,banktransfer,ussd",
       },
     });
   } catch (error) {
@@ -413,31 +417,47 @@ return res.status(200).json({
  */
 const verifyMembershipFee = async (req, res, next) => {
   try {
-    const { transaction_id, tx_ref } = req.body;
+    const { reference, tx_ref, transaction_id } = req.body;
 
-    if (!transaction_id || !tx_ref) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Transaction ID and tx_ref are required." 
+    // Paystack verifies by `reference` -- accept whichever field name the
+    // frontend is still sending during rollout.
+    const paymentRef = reference || tx_ref || transaction_id;
+
+    if (!paymentRef) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required."
       });
     }
 
-    // Call Flutterwave verification service
-    const verification = await verifyPayment(transaction_id);
+    // Call Paystack verification service
+    const verification = await verifyPayment(paymentRef);
 
-const payment = verification.data;
-if(payment.tx_ref !== tx_ref){
-   return res.status(400).json({
-      success:false,
-      message:"Invalid transaction reference"
-   });
-}
+    const payment = verification.data;
+    if (payment.tx_ref !== paymentRef) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid transaction reference"
+      });
+    }
 
-if(
- verification.status==="success" &&
- payment.status==="successful"
-){
-      // AFTER
+    if (
+      verification.status === "success" &&
+      payment.status === "successful"
+    ) {
+      // Do NOT trust the frontend/checkout amount blindly. The frontend
+      // amount that gets handed to the Paystack popup is fully editable in
+      // the browser before the popup opens, so the only trustworthy amount
+      // is what Paystack itself confirms was actually settled.
+      const amountPaid = Number(payment.amount_settled ?? payment.amount ?? 0);
+
+      if (amountPaid < MEMBERSHIP_FEE_AMOUNT) {
+        return res.status(400).json({
+          success: false,
+          message: `Payment amount (₦${amountPaid.toLocaleString()}) is less than the required membership fee of ₦${MEMBERSHIP_FEE_AMOUNT.toLocaleString()}.`,
+        });
+      }
+
       const userId = req.user._id;
       const user = await User.findById(userId);
       if (!user) {
@@ -455,7 +475,7 @@ if(
 
       // Unlock member account
       user.membershipFeePaid = true;
-      user.membershipFeeTxRef = tx_ref;
+      user.membershipFeeTxRef = paymentRef;
       user.membershipFeePaidAt = new Date();
       await user.save();
 
