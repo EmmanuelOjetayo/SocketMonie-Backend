@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const { verifyPayment, verifyTransactionById } = require("../Utilis/Flutterwave");
+const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const User = require("../Models/UserModel");
 const Minutes = require("../Models/MinutesModel");
 
@@ -443,10 +443,10 @@ exports.initializeMinutes = async (
 
       data: {
         publicKey:
-          process.env.FLW_PUBLIC_KEY,
+          FLW_PUBLIC_KEY,
 
         public_key:
-          process.env.FLW_PUBLIC_KEY,
+          FLW_PUBLIC_KEY,
 
         reference,
 
@@ -549,7 +549,7 @@ exports.initializeMinutes = async (
           ),
 
         // Split-payment subaccount — present ONLY in this one-time checkout payload.
-        subaccount_id: process.env.FLW_SUBACCOUNT_ID || undefined,
+        subaccount_id: FLW_SUBACCOUNT_ID || undefined,
       },
     });
   } catch (err) {
@@ -997,7 +997,7 @@ exports.verifyMinutes = async (
       err
     );
 
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message:
         err.message ||

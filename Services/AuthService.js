@@ -174,7 +174,12 @@ const ForgotPasswordService = async({email})=>{
     });
     if (!emailResult.success) {
       console.error("Email Error:", emailResult.error);
-      throw new AppError("Failed to send reset email.", 500);
+      // Don't fail the request - OTP is saved. Email can be retried.
+      return {
+        success: true,
+        message: "If an account exists with that email, a reset code has been sent.",
+        emailFailed: true,
+      };
     }
 
     return {

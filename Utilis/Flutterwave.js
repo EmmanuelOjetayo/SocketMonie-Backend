@@ -51,35 +51,50 @@ function normalizeTransaction(raw = {}) {
   };
 }
 
+const flwError = (message, statusCode, flwResponse) => {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.flwResponse = flwResponse;
+  return err;
+};
+
 const verifyTransactionById = async (transactionId) => {
-  const response = await client.get(`/transactions/${encodeURIComponent(String(transactionId))}/verify`);
-  const body = response.data;
-  if (!body || body.status !== "success" || !body.data) {
-    const err = new Error(body?.message || "Flutterwave verification failed.");
-    err.flwResponse = body;
-    throw err;
+  try {
+    const response = await client.get(`/transactions/${encodeURIComponent(String(transactionId))}/verify`);
+    const body = response.data;
+    if (!body || body.status !== "success" || !body.data) {
+      throw flwError(body?.message || "Flutterwave verification failed.", 400, body);
+    }
+    return normalizeTransaction(body.data);
+  } catch (err) {
+    if (err.statusCode) throw err;
+    const flwMsg = err.response?.data?.message || err.message;
+    throw flwError(flwMsg || "Flutterwave verification failed.", err.response?.status || 500, err.response?.data);
   }
-  return normalizeTransaction(body.data);
 };
 
 const verifyTransactionByReference = async (txRef) => {
-  const response = await client.get("/transactions/verify_by_reference", {
-    params: { tx_ref: txRef },
-  });
-  const body = response.data;
-  if (!body || body.status !== "success" || !body.data) {
-    const err = new Error(body?.message || "Flutterwave reference lookup failed.");
-    err.flwResponse = body;
-    throw err;
+  try {
+    const response = await client.get("/transactions/verify_by_reference", {
+      params: { tx_ref: txRef },
+    });
+    const body = response.data;
+    if (!body || body.status !== "success" || !body.data) {
+      throw flwError(body?.message || "Flutterwave reference lookup failed.", 400, body);
+    }
+    const list = Array.isArray(body.data) ? body.data : [body.data];
+    if (!list.length) throw flwError("Transaction not found for reference.", 404, body);
+    list.sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    return normalizeTransaction(list[0]);
+  } catch (err) {
+    if (err.statusCode) throw err;
+    const flwMsg = err.response?.data?.message || err.message;
+    throw flwError(flwMsg || "Flutterwave reference lookup failed.", err.response?.status || 500, err.response?.data);
   }
-  const list = Array.isArray(body.data) ? body.data : [body.data];
-  if (!list.length) throw new Error("Transaction not found for reference.");
-  list.sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
-  return normalizeTransaction(list[0]);
 };
 const verifyPayment = async (referenceOrId) => {
   if (referenceOrId === undefined || referenceOrId === null || String(referenceOrId).trim() === "") {
-    throw new Error("Payment reference is required.");
+    throw flwError("Payment reference is required.", 400);
   }
   const value = String(referenceOrId).trim();
   if (/^\d+$/.test(value)) return verifyTransactionById(value);
