@@ -58,7 +58,7 @@ const app = express();
 
 const allowedOrigins = [
   "https://socketmonnie.netlify.app",
-  'https://socketmonnie.onrender.com',
+  "https://socketmonnie.onrender.com",
   "http://localhost:5173",
 ];
 
