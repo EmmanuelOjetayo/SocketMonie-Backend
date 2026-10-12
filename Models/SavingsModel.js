@@ -38,8 +38,8 @@ const savingsSchema = new mongoose.Schema(
     maturityDate: { type: Date, default: null },
     isLocked: { type: Boolean, default: true },
     
-    reference: { type: String, default: null },
-    // Provider transaction reference (Flutterwave or Paystack — field name kept
+    reference: { type: String, default: null, unique: true, sparse: true },
+    // Provider transaction reference (Flutterwave — field name kept
     // for backward compatibility with existing records/queries).
     flutterwaveRef: { type: String, default: null },
     // Provider transaction id used as the hard duplicate-processing guard for

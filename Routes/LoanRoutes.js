@@ -2,78 +2,57 @@ const express = require("express");
 const loanRoutes = express.Router();
 const loanController = require("../Controllers/LoanController");
 const protect = require("../Middleware/AuthMiddleware");
-const validate = require("../Middleware/validate");
-const requireMembershipFee = require("../Middleware/requireMembershipFee"); // Paywall guard
-const authorize = require("../Middleware/authorize"); // Role guard middleware
-const { strictFinancialLimiter } = require("../Middleware/rateLimiter");
-// All loan routes require authentication
+const LoanValidate = require("../Middleware/LoanValidate");
+const requireMembershipFee = require("../Middleware/requireMembershipFee");
+const authorize = require("../Middleware/authorize");
+
 loanRoutes.use(protect);
 loanRoutes.use(authorize("super_admin", "finance_manager", "member"));
-// loanRoutes.use(strictFinancialLimiter);
-// --------------------------------------------------------------------------
-// LOAN ENQUIRIES (Protected by Membership Paywall)
-// --------------------------------------------------------------------------
+
+// Enquiries
 loanRoutes.get("/eligibility", loanController.checkEligibility);
 loanRoutes.get("/active", loanController.getActiveLoan);
 loanRoutes.get("/history", loanController.getLoanHistory);
 loanRoutes.get("/:loanId", loanController.getLoanById);
 loanRoutes.get("/:loanId/schedule", loanController.getRepaymentSchedule);
 
-// --------------------------------------------------------------------------
-// LOAN ACTIONS (Applying requires paid membership fee)
-// --------------------------------------------------------------------------
+// Actions
 loanRoutes.post(
-  "/apply", 
+  "/apply",
   requireMembershipFee,
-  validate({ 
-    amount: "required|monetary|min:100", 
-    durationMonths: "required|min:1|max:12", 
-    loanType: "required|string" 
-  }), 
+  LoanValidate.validateApplyLoan,
   loanController.applyForLoan
 );
 
 loanRoutes.post(
+  "/:loanId/replace-guarantor",
+  LoanValidate.validateReplaceGuarantor,
+  loanController.replaceGuarantor
+);
+
+loanRoutes.post(
   "/repay/initialize",
-  validate({
-    loanId: "required|string",
-    paymentAmount: "required|monetary|min:100",
-  }),
+  LoanValidate.validateRepayInitialize,
   loanController.initializeLoanRepayment
 );
 
 loanRoutes.post(
   "/repay/verify",
-  validate({
-    loanId: "required|string",
-    transactionId: "required|string",
-    tx_ref: "required|string",
-  }),
+  LoanValidate.validateRepayVerify,
   loanController.verifyLoanRepayment
 );
 
-// loanRoutes.post(
-//   "/repay", 
-//   validate({ 
-//     loanId: "required|string", 
-//     paymentAmount: "required|monetary|min:100" 
-//   }), 
-//   loanController.repayLoan
-// );
-
-// --------------------------------------------------------------------------
-// ADMIN / MANAGEMENT ACTIONS
-// --------------------------------------------------------------------------
+// Admin / Management Actions
 loanRoutes.put(
-  "/approve/:loanId", 
-  authorize("super_admin", "finance_manager"), 
+  "/approve/:loanId",
+  authorize("super_admin", "finance_manager"),
   loanController.approveAndDisburseLoan
 );
 
-// AFTER
 loanRoutes.post(
-  "/admin/process-defaulters", 
-  authorize("super_admin", "finance_manager"), 
+  "/admin/process-defaulters",
+  authorize("super_admin", "finance_manager"),
   loanController.triggerLoanDefaulterCheck
 );
+
 module.exports = loanRoutes;

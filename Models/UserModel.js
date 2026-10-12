@@ -43,6 +43,10 @@ role: {
         type: Date,
         default: null
     },
+thisMonthMinutesUnpaid: {
+        type: Boolean,
+        default: true
+    },
     isVerified: {
         default: false,
         type: Boolean

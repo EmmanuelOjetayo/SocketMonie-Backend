@@ -12,11 +12,13 @@ const GuarantorSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
       required: true,
+      index: true,
     },
     guarantorUserId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
-      default: null, // Populated if the guarantor is an existing cooperative member
+      default: null,
+      index: true,
     },
     guarantorName: {
       type: String,
@@ -39,16 +41,13 @@ const GuarantorSchema = new mongoose.Schema(
       required: true,
     },
     guaranteedAmount: {
-  type: Number,
-  required: true,
-},
-
-remainingGuaranteedBalance: {
-  type: Number,
-  required: true,
-},
-
-    // --- NEW: GUARANTOR VERIFICATION DETAILS ---
+      type: Number,
+      required: true,
+    },
+    remainingGuaranteedBalance: {
+      type: Number,
+      required: true,
+    },
     address: { type: String, default: null },
     occupation: { type: String, default: null },
     employerName: { type: String, default: null },
@@ -58,21 +57,20 @@ remainingGuaranteedBalance: {
       default: null,
     },
     idNumber: { type: String, default: null },
-
-    // --- NEW: DOCUMENT & CREDENTIAL URLS FOR SUPER ADMIN VIEWING ---
-    idCardUrl: { type: String, default: null }, // Link to uploaded ID proof
-    proofOfAddressUrl: { type: String, default: null }, // Utility bill / bank statement
-    signatureUrl: { type: String, default: null }, // Digital signature / signed guarantee form
-
+    idCardUrl: { type: String, default: null },
+    proofOfAddressUrl: { type: String, default: null },
+    signatureUrl: { type: String, default: null },
     status: {
       type: String,
-      enum: ["pending", "accepted", "rejected", "expired"],
+      enum: ["pending", "accepted", "rejected", "expired", "active", "released"],
       default: "pending",
+      index: true,
     },
     verificationToken: {
       type: String,
       required: true,
       unique: true,
+      index: true,
     },
     tokenExpiresAt: {
       type: Date,
@@ -82,19 +80,32 @@ remainingGuaranteedBalance: {
       type: Date,
       default: null,
     },
+    rejectedAt: {
+      type: Date,
+      default: null,
+    },
     releasedAt: {
-  type: Date,
-  default: null,
-},
-approvedLoanAt: {
-  type: Date,
-  default: null,
-},
-isReleased: {
-  type: Boolean,
-  default: false,
-},
-
+      type: Date,
+      default: null,
+    },
+    isReleased: {
+      type: Boolean,
+      default: false,
+    },
+    isReplaced: {
+      type: Boolean,
+      default: false,
+    },
+    replacementFor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Guarantors",
+      default: null,
+    },
+    replacedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Guarantors",
+      default: null,
+    },
     rejectionReason: {
       type: String,
       default: null,

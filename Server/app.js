@@ -5,11 +5,12 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const hpp = require("hpp");
-// const mongoSanitize = require("../Middleware/mongoSanitize");
+const cookieParser = require("cookie-parser");
+const mongoSanitize = require("../Middleware/mongoSanitize");
 const dns = require("dns");
 dns.setServers(['8.8.8.8', '8.8.4.4']);
 
-const { globalLimiter } = require("../Middleware/rateLimiter");
+const { globalLimiter, financialLimiter, adminLimiter } = require("../Middleware/rateLimiter");
 const db = require("../Config/db");
 
 // ==========================================================================
@@ -40,6 +41,8 @@ const tierRoutes = require("../Routes/TierRoutes");
 const paymentRoutes = require("../Routes/PaymentRoutes");
 const systemSettingsRoutes = require("../Routes/SystemSettingsRoutes");
 const guarantorRoutes = require("../Routes/GuarantorRoutes");
+const recoveryRoutes = require("../Routes/RecoveryRoutes");
+const expenseRoutes = require("../Routes/ExpenseRoutes");
 
 // ==========================================================================
 // 3. APP CONFIGURATION
@@ -78,7 +81,7 @@ const corsOptions = {
     );
   },
 
-  // credentials: true,
+  credentials: true,
 
   methods: [
     "GET",
@@ -117,10 +120,8 @@ app.use(cors(corsOptions));
 // ==========================================================================
 
 // Capture the raw request body bytes as they arrive, BEFORE JSON parsing.
-// Paystack webhook signatures are an HMAC-SHA512 of the exact raw body —
-// re-serializing req.body with JSON.stringify() after parsing does NOT
-// reliably reproduce the same bytes (key order, spacing, unicode escaping
-// can all differ), so the raw buffer must be preserved for verification.
+// Flutterwave webhook requests carry the `verif-hash` header; keeping the
+// raw body available lets the webhook handler log/debug exact payload bytes.
 app.use(
   express.json({
     verify: (req, res, buf) => {
@@ -135,6 +136,9 @@ app.use(
   })
 );
 
+// Parse cookies — must run before auth middleware so req.cookies is available
+app.use(cookieParser());
+
 // ==========================================================================
 // 7. OTHER SECURITY MIDDLEWARE
 // ==========================================================================
@@ -143,11 +147,18 @@ app.use(
 app.use(hpp());
 
 // Prevent NoSQL / MongoDB operator injection (e.g. { "$gt": "" } in req.body/query)
-// app.use(mongoSanitize());
+app.use(mongoSanitize);
 
 // Global rate limiter
 // CORS/preflight is handled BEFORE this middleware.
 app.use(globalLimiter);
+
+// Financial endpoints limiter
+app.use('/api/loans', financialLimiter);
+app.use('/api/savings', financialLimiter);
+app.use('/api/payments', financialLimiter);
+// Admin endpoints limiter
+app.use('/api/admin', adminLimiter);
 
 // ==========================================================================
 // 8. API ROUTES
@@ -164,6 +175,10 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/loans", loanRoutes);
 
 app.use("/api/guarantors", guarantorRoutes);
+
+app.use("/api/recovery", recoveryRoutes);
+
+app.use("/api/expenses", expenseRoutes);
 
 app.use("/api/notifications", notificationRoutes);
 
@@ -184,7 +199,13 @@ app.use("/api/tier", tierRoutes);
 app.use("/api/payments", paymentRoutes);
 
 app.use("/api/settings", systemSettingsRoutes);
-
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 // ==========================================================================
 // 9. HEALTH CHECK
 // ==========================================================================
@@ -198,9 +219,14 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
+  const flwSecretHashConfigured = !!(process.env.FLW_SECRET_HASH || process.env.FLW_WEBHOOK_SECRET);
+  if (!flwSecretHashConfigured) {
+    console.warn("WARNING: FLW_SECRET_HASH is not configured. Webhook signature verification will fail.");
+  }
   res.status(200).json({
     success: true,
     message: "API is healthy",
+    flwSecretHashConfigured,
   });
 });
 
@@ -223,9 +249,9 @@ app.use((err, req, res, next) => {
   console.error("❌ Server Error:", err);
 
   const statusCode =
-    res.statusCode && res.statusCode !== 200
+    err.statusCode || (res.statusCode && res.statusCode !== 200
       ? res.statusCode
-      : 500;
+      : 500);
 
   res.status(statusCode).json({
     success: false,
@@ -237,6 +263,7 @@ app.use((err, req, res, next) => {
         ? null
         : err.stack,
   });
+  next()
 });
 
 // ==========================================================================
@@ -246,6 +273,14 @@ app.use((err, req, res, next) => {
 const startServer = async () => {
   try {
     await db();
+
+    // FALLBACK 2: sweep stale pending payments so missed webhooks reconcile.
+    try {
+      const { startReconciliationCron } = require("../Utilis/paymentReconciliationCron");
+      startReconciliationCron();
+    } catch (cronErr) {
+      console.error("⚠️  Reconciliation cron failed to start:", cronErr.message);
+    }
 
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);

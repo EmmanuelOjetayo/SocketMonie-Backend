@@ -6,38 +6,27 @@ const InstallmentSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
-
   dueDate: {
     type: Date,
     required: true,
   },
-
   amountDue: {
     type: Number,
     required: true,
   },
-
   amountPaid: {
     type: Number,
     default: 0,
   },
-
-status: {
-  type: String,
-  enum: [
-    "unpaid",
-    "partially_paid",
-    "paid",
-    "overdue",
-  ],
-  default: "unpaid",
-},
-
+  status: {
+    type: String,
+    enum: ["unpaid", "partially_paid", "paid", "overdue"],
+    default: "unpaid",
+  },
   penaltyApplied: {
     type: Boolean,
     default: false,
   },
-
   paidAt: Date,
 });
 
@@ -48,19 +37,15 @@ const LoanSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
       required: true,
-      index: true
+      index: true,
     },
 
     // Loan Information
     loanType: {
       type: String,
-      enum: [
-        "cooperative",
-        "emergency",
-        "personal",
-        "business",
-      ],
+      enum: ["cooperative", "emergency", "personal", "business"],
       default: "cooperative",
+      index: true,
     },
 
     principalAmount: {
@@ -78,6 +63,11 @@ const LoanSchema = new mongoose.Schema(
       required: true,
     },
 
+    disbursementAmount: {
+      type: Number,
+      default: 0,
+    },
+
     totalRepayable: {
       type: Number,
       required: true,
@@ -86,7 +76,6 @@ const LoanSchema = new mongoose.Schema(
     durationMonths: {
       type: Number,
       required: true,
-      enum: [1, 3, 6, 12],
     },
 
     amountPaid: {
@@ -99,15 +88,10 @@ const LoanSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Eligibility Snapshot
+    // Eligibility Snapshot & Tier
     tier: {
       type: String,
-      enum: [
-        "1st_tier_70",
-        "2nd_tier_100",
-        "3rd_tier_150",
-      ],
-      required: true,
+      default: "1st_tier_150",
     },
 
     socketScore: {
@@ -115,10 +99,19 @@ const LoanSchema = new mongoose.Schema(
       default: 0,
     },
 
+    interestSnapshot: {
+      rate: Number,
+      amount: Number,
+      ruleName: String,
+      ruleVersion: String,
+      calculatedAt: Date,
+    },
+
     eligibilitySnapshot: {
       netSavings: Number,
       maxLoanAmount: Number,
       tier: String,
+      isEmergency: Boolean,
     },
 
     // Loan Status
@@ -135,7 +128,8 @@ const LoanSchema = new mongoose.Schema(
         "restricted_90_days",
         "recovery_120_days",
       ],
-      default: "pending_review",
+      default: "waiting_guarantor",
+      index: true,
     },
 
     rejectionReason: {
@@ -150,24 +144,20 @@ const LoanSchema = new mongoose.Schema(
     },
 
     reviewedAt: Date,
-
     approvedAt: Date,
+
     loanNumber: {
-  type: String,
-  unique: true,
-},
+      type: String,
+      unique: true,
+      index: true,
+    },
 
     disbursedAt: Date,
-
     completedAt: Date,
 
-    // Loan Configuration
     disbursementMethod: {
       type: String,
-      enum: [
-        "bank_transfer",
-        "wallet",
-      ],
+      enum: ["bank_transfer", "wallet"],
       default: "bank_transfer",
     },
 
@@ -176,89 +166,62 @@ const LoanSchema = new mongoose.Schema(
       default: "General",
     },
 
-    // ===============================
-// Guarantor Snapshot
-// ===============================
-
-guarantor: {
-  requestId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Guarantors",
-    default: null,
-  },
-
-  guarantorUserId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Users",
-    default: null,
-  },
-
-  fullName: String,
-
-  email: String,
-
-  phone: String,
-
-  relationship: String,
-
-  status: {
-    type: String,
-    enum: [
-      "waiting_guarantor",
-      "pending",
-      "accepted",
-      "rejected",
-      "expired",
-    ],
-    default: "pending",
-  },
-
-  acceptedAt: Date,
-
-  guaranteedAmount: {
-    type: Number,
-    default: 0,
-  },
-
-  remainingGuaranteedBalance: {
-    type: Number,
-    default: 0,
-  },
-
-  guaranteeReleasedAt: Date,
-},
-
-    guarantors: [{
-      userId: { type: mongoose.Schema.Types.ObjectId, ref: "Users", required: true },
+    // Legacy single guarantor support
+    guarantor: {
+      requestId: { type: mongoose.Schema.Types.ObjectId, ref: "Guarantors", default: null },
+      guarantorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "Users", default: null },
       fullName: String,
       email: String,
       phone: String,
-      referralCode: String,
+      relationship: String,
       status: {
         type: String,
-        enum: ["pending", "accepted", "rejected", "expired", "active"],
+        enum: ["waiting_guarantor", "pending", "accepted", "rejected", "expired", "active", "released"],
         default: "pending",
       },
-      verificationToken: String,
       acceptedAt: Date,
       guaranteedAmount: { type: Number, default: 0 },
       remainingGuaranteedBalance: { type: Number, default: 0 },
-      requestedAt: { type: Date, default: Date.now },
-    }],
+      guaranteeReleasedAt: Date,
+    },
+
+    // Active multi-guarantors
+    guarantors: [
+      {
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: "Users", required: true },
+        fullName: String,
+        email: String,
+        phone: String,
+        referralCode: String,
+        status: {
+          type: String,
+          enum: ["pending", "accepted", "rejected", "expired", "active", "released"],
+          default: "pending",
+        },
+        verificationToken: String,
+        acceptedAt: Date,
+        rejectedAt: Date,
+        rejectionReason: String,
+        isReplaced: { type: Boolean, default: false },
+        replacedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Users", default: null },
+        replacementReason: String,
+        replacedAt: Date,
+        guaranteedAmount: { type: Number, default: 0 },
+        remainingGuaranteedBalance: { type: Number, default: 0 },
+        requestedAt: { type: Date, default: Date.now },
+      },
+    ],
+
+    recoveryStatus: {
+      type: String,
+      enum: ["none", "in_recovery", "recovered"],
+      default: "none",
+    },
 
     // Payment Summary
     nextPaymentDate: Date,
-
-    nextPaymentAmount: {
-      type: Number,
-      default: 0,
-    },
-
-    missedPayments: {
-      type: Number,
-      default: 0,
-    },
-
+    nextPaymentAmount: { type: Number, default: 0 },
+    missedPayments: { type: Number, default: 0 },
     installments: [InstallmentSchema],
 
     repaymentHistory: [
@@ -271,73 +234,40 @@ guarantor: {
       },
     ],
 
-    // Paystack Payout
-    payoutReference: {
-      type: String,
-      default: null,
-    },
-
+    payoutReference: { type: String, default: null },
     payoutStatus: {
       type: String,
-      enum: [
-        "pending",
-        "completed",
-        "failed",
-      ],
+      enum: ["pending", "completed", "failed"],
       default: "pending",
     },
+    payoutRef: { type: String, default: null },
 
-    payoutRef: {
-      type: String,
-      default: null,
-    },
-
-    // Timeline
     timeline: [
       {
         action: String,
-
         note: String,
-
-        by: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "Users",
-        },
-
-        createdAt: {
-          type: Date,
-          default: Date.now,
-        },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: "Users" },
+        createdAt: { type: Date, default: Date.now },
       },
     ],
   },
   {
     timestamps: true,
-    toJSON: {
-      virtuals: true,
-    },
-    toObject: {
-      virtuals: true,
-    },
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 
-// Virtual Progress Percentage
 LoanSchema.virtual("progress").get(function () {
   if (!this.totalRepayable) return 0;
-
-  return Math.round(
-    (this.amountPaid / this.totalRepayable) * 100
-  );
+  return Math.round((this.amountPaid / this.totalRepayable) * 100);
 });
 
 LoanSchema.statics.generateLoanNumber = async function () {
   let loanNumber;
-
   do {
     loanNumber = `LN${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
   } while (await this.exists({ loanNumber }));
-
   return loanNumber;
 };
 

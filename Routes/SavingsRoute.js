@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const routeProtect = require("../Middleware/AuthMiddleware");
+const SavingsValidate = require("../Middleware/SavingsValidate");
 const {
   getSavingsSummary,
   getMonthlySavingsReport,
@@ -11,20 +12,13 @@ const {
   verifyMembershipFee,
 } = require("../Controllers/SavingsController");
 
-// Existing routes
 router.get("/summary", routeProtect, getSavingsSummary);
-
 router.get("/report", routeProtect, getMonthlySavingsReport);
 router.get("/history", routeProtect, getSavingsHistory);
-// Direct withdrawal bypass route removed (H1) — all withdrawals must go through
-// the admin-approval flow below. Frontend already uses this exclusively.
-router.post("/withdraw-request", routeProtect, requestWithdrawal);
 
-// NEW: Tier upgrade & commitment update route
-router.put("/tier-commitment", routeProtect, updateTierCommitment);
-
-// Membership fee paywall (implemented in the controller but never routed until now)
+router.post("/withdraw-request", routeProtect, SavingsValidate.validateWithdrawRequest, requestWithdrawal);
+router.put("/tier-commitment", routeProtect, SavingsValidate.validateTierCommitment, updateTierCommitment);
 router.post("/membership-fee/initialize", routeProtect, initializeMembershipFee);
-router.post("/membership-fee/verify", routeProtect, verifyMembershipFee);
+router.post("/membership-fee/verify", routeProtect, SavingsValidate.validateVerifyMembershipFee, verifyMembershipFee);
 
 module.exports = router;
