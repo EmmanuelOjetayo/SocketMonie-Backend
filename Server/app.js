@@ -52,6 +52,10 @@ const PORT = process.env.PORT || 5000;
 
 const app = express();
 
+// Trust proxy - required for Render/Heroku behind reverse proxy
+// Enables express-rate-limit to read X-Forwarded-For header
+app.set("trust proxy", 1);
+
 // ==========================================================================
 // 4. CORS CONFIGURATION
 // ==========================================================================
@@ -246,7 +250,12 @@ app.use((req, res) => {
 // ==========================================================================
 
 app.use((err, req, res, next) => {
-  console.error("❌ Server Error:", err);
+  // If headers already sent, delegate to Express default
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  console.error("❌ Server Error:", err.message);
 
   const statusCode =
     err.statusCode || (res.statusCode && res.statusCode !== 200
@@ -256,14 +265,11 @@ app.use((err, req, res, next) => {
   res.status(statusCode).json({
     success: false,
     message: err.message || "Internal Server Error",
-
-    // Only expose stack traces during development
     stack:
       process.env.NODE_ENV === "production"
         ? null
         : err.stack,
   });
-  next()
 });
 
 // ==========================================================================
