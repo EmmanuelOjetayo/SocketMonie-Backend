@@ -59,7 +59,7 @@ const getAdminActivityHistory = async (filter = {}, options = { page: 1, limit: 
       limit,
       totalPages: Math.ceil(total / limit),
     },
-  });
+  };
 };
 
 /**

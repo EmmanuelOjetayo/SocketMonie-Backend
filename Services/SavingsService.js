@@ -5,7 +5,7 @@ const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const AppError = require("../Utilis/AppError");
-const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../../Config/constants");
+const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
 
 const getAverageMonthlySavings = async (userId) => {
   const sixMonthsAgo = new Date();

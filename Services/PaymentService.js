@@ -8,7 +8,7 @@ const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
 const AppError = require("../Utilis/AppError");
-const { MONTHLY_MINUTES_AMOUNT, MEMBERSHIP_FEE_AMOUNT } = require("../../Config/constants");
+const { MONTHLY_MINUTES_AMOUNT, MEMBERSHIP_FEE_AMOUNT } = require("../Config/constants");
 
 const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);

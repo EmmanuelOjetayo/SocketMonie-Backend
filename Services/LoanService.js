@@ -16,7 +16,7 @@ const {
   LOAN_TIERS,
   INTEREST_RATES,
   ELIGIBILITY,
-} = require("../../Config/constants");
+} = require("../Config/constants");
 
 const getNetSavings = async (userId) => {
   const completedSavings = await LoanRepository.findCompletedSavings(userId);
