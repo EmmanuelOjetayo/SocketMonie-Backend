@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const User = require("../Models/UserModel");
 const Minutes = require("../Models/MinutesModel");
+const Savings = require("../Models/SavingsModel");
 
 const { logAudit } = require("../Utilis/auditLogger");
 const {
@@ -422,16 +423,22 @@ exports.initializeMinutes = async (
      * 4. Create ONE payment reference for the entire
      *    outstanding balance.
      *
-     * We do NOT create a new Minutes record here.
-     *
-     * Minutes records are monthly obligations.
-     *
-     * The Flutterwave tx_ref represents the settlement
-     * of all those obligations.
+     * Save a pending record so the webhook and
+     * reconciliation cron can find it by reference.
      * -----------------------------------------------------
      */
     const reference =
       generateReference(userId);
+
+    await Savings.create({
+      userId,
+      amount: totalPayable,
+      type: "deposit",
+      category: "minutes_payment",
+      method: "flutterwave",
+      status: "pending",
+      reference,
+    });
 
     /**
      * -----------------------------------------------------
@@ -873,6 +880,22 @@ exports.verifyMinutes = async (
 
         settledMinutes =
           currentOutstanding;
+      }
+    );
+
+    /**
+     * -----------------------------------------------------
+     * 6b. Mark the pending checkout Savings record as
+     *     completed so reconciliation doesn't re-process it.
+     * -----------------------------------------------------
+     */
+    await Savings.findOneAndUpdate(
+      { reference: ref, status: "pending" },
+      {
+        $set: {
+          status: "completed",
+          transactionId: String(flwData.id),
+        },
       }
     );
 

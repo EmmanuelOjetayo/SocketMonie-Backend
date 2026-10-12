@@ -8,7 +8,7 @@ const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
 const AppError = require("../Utilis/AppError");
-const { MONTHLY_MINUTES_AMOUNT, MEMBERSHIP_FEE_AMOUNT } = require("../Config/constants");
+const { MEMBERSHIP_FEE_AMOUNT } = require("../Config/constants");
 
 const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
@@ -483,16 +483,20 @@ const handleMinuteWebhook = async (data) => {
 
   if (!reference || !transactionId) return;
 
+  // The checkout reference (MIN_...) lives on a pending Savings record
+  // created by initializeMinutes. Find it first.
+  const pendingPayment = await PaymentRepository.findSavingsByReference(reference);
+  if (!pendingPayment) return;
+
   if (status !== "successful") {
-    const failedPayment = await PaymentRepository.findMinutesByReference(reference);
-    if (!failedPayment) return;
-    failedPayment.status = "failed";
-    await failedPayment.save();
+    if (pendingPayment.status === "completed") return;
+    pendingPayment.status = "failed";
+    await pendingPayment.save();
     await createNotification({
-      userId: failedPayment.userId,
+      userId: pendingPayment.userId,
       type: "savings",
       title: "Monthly Contribution Failed",
-      message: "Your ₦500 SocketMinutes contribution could not be completed. Please try again.",
+      message: "Your SocketMinutes contribution could not be completed. Please try again.",
     });
     return;
   }
@@ -507,39 +511,62 @@ const handleMinuteWebhook = async (data) => {
     return;
   }
 
-  if (amount < MONTHLY_MINUTES_AMOUNT) return;
+  if (pendingPayment.status === "completed") return;
 
-  const minutesPayment = await PaymentRepository.findMinutesByReference(reference);
-  if (!minutesPayment || minutesPayment.status === "completed") return;
+  // Settle ALL outstanding monthly obligations for this user.
+  const userId = pendingPayment.userId;
+  const mongoose = require("mongoose");
+  const Minutes = require("../Models/MinutesModel");
+  const session = await mongoose.startSession();
+  let settledCount = 0;
+  try {
+    await session.withTransaction(async () => {
+      const result = await Minutes.updateMany(
+        {
+          userId,
+          status: { $in: ["pending", "overdue"] },
+          category: "monthly_contribution",
+        },
+        {
+          $set: {
+            status: "completed",
+            transactionId: String(transactionId),
+            paidAt: new Date(),
+          },
+        },
+        { session }
+      );
+      settledCount = result.modifiedCount || 0;
 
-  const minutes = await PaymentRepository.findAndCompleteMinutes(reference, {
-    status: "completed",
-    transactionId: String(transactionId),
-    paidAt: new Date(),
-  });
+      pendingPayment.status = "completed";
+      pendingPayment.transactionId = String(transactionId);
+      await pendingPayment.save({ session });
+    });
+  } finally {
+    await session.endSession();
+  }
 
-  if (!minutes) return;
+  if (settledCount === 0) return;
 
-  await PaymentRepository.updateUser(minutes.userId, { thisMonthMinutesUnpaid: false });
+  await PaymentRepository.updateUser(userId, { thisMonthMinutesUnpaid: false });
 
   await createNotification({
-    userId: minutes.userId,
+    userId,
     type: "savings",
     title: "Monthly Contribution Successful",
-    message: "Your ₦500 SocketMinutes contribution for this month was successful.",
+    message: `Your SocketMinutes contribution for ${settledCount} month${settledCount > 1 ? "s" : ""} was successful.`,
   });
 
   await logAudit({
-    userId: minutes.userId,
+    userId,
     action: "monthly_minutes_paid",
     targetType: "minutes",
-    targetId: minutes._id,
+    targetId: pendingPayment._id,
     details: {
-      amount: minutes.amount,
+      amount,
       reference,
       transactionId,
-      month: minutes.month,
-      year: minutes.year,
+      monthsSettled: settledCount,
       method: "flutterwave",
     },
   });
@@ -568,8 +595,12 @@ const processWebhook = async (rawBody, signature, event) => {
   const transactionId = payload.id;
   const txRef = payload.tx_ref || payload.txRef || payload.reference || null;
 
-  // Flutterwave collection events: charge.completed (+ transfer events for payouts).
-  const isChargeEvent = eventName === "charge.completed" || (!eventName && transactionId && txRef);
+  // Flutterwave collection events: charge.completed, charge.confirmed (+ transfer events for payouts).
+  const isChargeEvent =
+    eventName === "charge.completed" ||
+    eventName === "charge.confirmed" ||
+    eventName === "charge.successful" ||
+    (!eventName && transactionId && txRef);
   const isTransferEvent =
     eventName === "transfer.completed" ||
     eventName === "transfer.failed" ||

@@ -13,7 +13,6 @@
 
 const mongoose = require("mongoose");
 const Savings = require("../Models/SavingsModel");
-const Minutes = require("../Models/MinutesModel");
 const User = require("../Models/UserModel");
 const { PaymentService } = require("./PaymentService");
 
@@ -48,7 +47,7 @@ const runReconciliation = async () => {
   const cutoff = staleBefore();
   const references = new Set();
 
-  const [deposits, repayments, minutes, memberships] = await Promise.all([
+  const [deposits, repayments, minutesPayments, memberships] = await Promise.all([
     Savings.find({
       type: "deposit",
       status: "pending",
@@ -61,7 +60,8 @@ const runReconciliation = async () => {
       reference: { $regex: "^(LRP|RPL)_" },
       createdAt: { $lt: cutoff },
     }).select("reference").limit(BATCH_LIMIT).lean(),
-    Minutes.find({
+    Savings.find({
+      category: "minutes_payment",
       status: "pending",
       reference: /^MIN_/,
       createdAt: { $lt: cutoff },
@@ -74,7 +74,7 @@ const runReconciliation = async () => {
 
   deposits.forEach((d) => d.reference && references.add(d.reference));
   repayments.forEach((r) => r.reference && references.add(r.reference));
-  minutes.forEach((m) => m.reference && references.add(m.reference));
+  minutesPayments.forEach((m) => m.reference && references.add(m.reference));
   memberships.forEach((u) => u.membershipFeeTxRef && references.add(u.membershipFeeTxRef));
 
   const outcomes = { scanned: references.size, reconciled: 0, pending: 0, failed: 0 };

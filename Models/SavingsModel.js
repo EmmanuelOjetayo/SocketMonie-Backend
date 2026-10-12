@@ -18,6 +18,11 @@ const savingsSchema = new mongoose.Schema(
       enum: ["deposit", "withdrawal", "loan_repayment"],
       default: "deposit",
     },
+    // Distinguishes deposit sub-types (e.g. minutes checkout, savings deposit).
+    category: {
+      type: String,
+      default: null,
+    },
     method: {
       type: String,
       enum: ["bank_transfer", "card", "wallet", "flutterwave", "paystack", "flutterwave_payout", "Bank Transfer", "Card", "Wallet"],
