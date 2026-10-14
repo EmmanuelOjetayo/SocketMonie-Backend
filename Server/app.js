@@ -153,9 +153,17 @@ app.use(hpp());
 // Prevent NoSQL / MongoDB operator injection (e.g. { "$gt": "" } in req.body/query)
 app.use(mongoSanitize);
 
-// Global rate limiter
+// Global rate limiter: 100 requests per 5 minutes (webhook excluded)
 // CORS/preflight is handled BEFORE this middleware.
+// Debug endpoint: POST /_debug/reset-ratelimit to reset the store
 app.use(globalLimiter);
+
+app.post("/_debug/reset-ratelimit", (req, res) => {
+  globalLimiter.store && globalLimiter.store.reset
+    ? globalLimiter.store.reset()
+    : globalLimiter.store && globalLimiter.store.clear();
+  res.json({ success: true, message: "Rate limiter reset" });
+});
 
 // Financial endpoints limiter
 app.use('/api/loans', financialLimiter);
@@ -256,6 +264,7 @@ app.use((err, req, res, next) => {
   }
 
   console.error("❌ Server Error:", err.message);
+  if (process.env.DEBUG_STACK === "1") console.error(err.stack);
 
   const statusCode =
     err.statusCode || (res.statusCode && res.statusCode !== 200
@@ -303,5 +312,38 @@ const startServer = async () => {
 };
 
 startServer();
+
+// Prevent transient MongoDB/network errors from crashing the process.
+process.on("unhandledRejection", (reason) => {
+  console.error("⚠️ Unhandled Rejection (kept alive):", reason?.message || reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("⚠️ Uncaught Exception (kept alive):", err?.message || err);
+});
+
+// Graceful shutdown on SIGTERM/SIGINT
+process.on("SIGTERM", async () => {
+  console.info("🛑 SIGTERM received. Shutting down gracefully...");
+  try {
+    const mongoose = require("mongoose");
+    await mongoose.connection.close();
+  } catch (e) {
+    console.error("Error during shutdown:", e.message);
+  } finally {
+    process.exit(0);
+  }
+});
+
+process.on("SIGINT", async () => {
+  console.info("🛑 SIGINT received. Shutting down gracefully...");
+  try {
+    const mongoose = require("mongoose");
+    await mongoose.connection.close();
+  } catch (e) {
+    console.error("Error during shutdown:", e.message);
+  } finally {
+    process.exit(0);
+  }
+});
 
 module.exports = app;
