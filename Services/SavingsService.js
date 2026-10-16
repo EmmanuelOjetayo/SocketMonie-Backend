@@ -47,6 +47,53 @@ const updateUserTierAndScore = async (userId, trigger = null) => {
   if (tierChanged) await user.save();
 };
 
+const getMonthlySavingsReport = async (userId) => {
+  const savingsList = await SavingsRepository.findCompletedForUser(userId);
+  const now = new Date();
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const reportMap = {};
+
+  for (let i = 5; i >= 0; i -= 1) {
+    reportMap[monthNames[new Date(now.getFullYear(), now.getMonth() - i, 1).getMonth()]] = 0;
+  }
+
+  savingsList.forEach((item) => {
+    const month = monthNames[new Date(item.createdAt).getMonth()];
+    if (reportMap[month] !== undefined) reportMap[month] += item.amount;
+  });
+
+  return Object.keys(reportMap).map((month) => ({ month, amount: reportMap[month] }));
+};
+
+// Helper: compute MoM growth rate from completed deposits
+const computeMoMGrowthRate = async (userId) => {
+  const twelveMonthsAgo = new Date();
+  twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+  twelveMonthsAgo.setHours(0, 0, 0, 0);
+
+  const deposits = await SavingsRepository.findCompletedDepositsSince(userId, twelveMonthsAgo);
+  if (deposits.length < 2) return 0; // Not enough data for growth rate
+
+  // Group deposits by month
+  const monthMap = {};
+  deposits.forEach((d) => {
+    const key = `${d.createdAt.getFullYear()}-${d.createdAt.getMonth()}`;
+    monthMap[key] = (monthMap[key] || 0) + d.amount;
+  });
+
+  // Get last two months sorted chronologically
+  const months = Object.keys(monthMap).sort();
+  if (months.length < 2) return 0;
+
+  const [prevMonth, currMonth] = months.slice(-2); // last two = most recent
+  const prevAmount = monthMap[prevMonth];
+  const currAmount = monthMap[currMonth];
+
+  if (prevAmount === 0) return 0; // Avoid division by zero
+
+  return ((currAmount - prevAmount) / prevAmount) * 100;
+};
+
 const getSavingsSummary = async (userId) => {
   const savingsList = await SavingsRepository.findCompletedForUser(userId);
   const totalSaved = savingsList.reduce(
@@ -65,6 +112,9 @@ const getSavingsSummary = async (userId) => {
   const tierMin = getMinCommitmentForTier(currentTier);
   const monthlyTarget = user?.monthlySavingsCommitment > 0 ? user.monthlySavingsCommitment : tierMin;
 
+  // Compute actual growth rate from savings history
+  const growthRatePct = await computeMoMGrowthRate(userId);
+
   return {
     totalSaved,
     currentTier,
@@ -72,26 +122,8 @@ const getSavingsSummary = async (userId) => {
     monthlyContributed,
     monthCompletion: Math.min(100, Math.round((monthlyContributed / monthlyTarget) * 100)),
     isTierTargetMet: monthlyContributed >= monthlyTarget,
-    growthRatePct: GROWTH_RATE_DEFAULT,
+    growthRatePct,
   };
-};
-
-const getMonthlySavingsReport = async (userId) => {
-  const savingsList = await SavingsRepository.findCompletedForUser(userId);
-  const now = new Date();
-  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const reportMap = {};
-
-  for (let i = 5; i >= 0; i -= 1) {
-    reportMap[monthNames[new Date(now.getFullYear(), now.getMonth() - i, 1).getMonth()]] = 0;
-  }
-
-  savingsList.forEach((item) => {
-    const month = monthNames[new Date(item.createdAt).getMonth()];
-    if (reportMap[month] !== undefined) reportMap[month] += item.amount;
-  });
-
-  return Object.keys(reportMap).map((month) => ({ month, amount: reportMap[month] }));
 };
 
 const getSavingsHistory = async (userId, page, limit) => {

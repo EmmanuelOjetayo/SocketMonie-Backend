@@ -233,7 +233,8 @@ app.get("/", (req, res) => {
 app.get("/api/health", (req, res) => {
   const flwSecretHashConfigured = !!(process.env.FLW_SECRET_HASH || process.env.FLW_WEBHOOK_SECRET);
   if (!flwSecretHashConfigured) {
-    console.warn("WARNING: FLW_SECRET_HASH is not configured. Webhook signature verification will fail.");
+    console.error("❌ CRITICAL: FLW_SECRET_HASH is not configured. Webhook signature verification will be disabled. Set FLW_SECRET_HASH or FLW_WEBHOOK_SECRET in .env");
+    process.exit(1);
   }
   res.status(200).json({
     success: true,

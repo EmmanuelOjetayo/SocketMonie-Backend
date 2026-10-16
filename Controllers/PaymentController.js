@@ -34,8 +34,21 @@ exports.paymentCallback = async (req, res) => {
     if (txId) params.push(`transaction_id=${encodeURIComponent(txId)}`);
     if (status) params.push(`status=${encodeURIComponent(status)}`);
 
+    // Normalize status: Flutterwave may send "successful", "completed", "success",
+    // "paid", "authorised", or other status strings
+    const normalizedStatus = (status || "").toLowerCase();
+    const isSuccessStatus =
+      normalizedStatus === "successful" ||
+      normalizedStatus === "completed" ||
+      normalizedStatus === "success" ||
+      normalizedStatus === "paid" ||
+      normalizedStatus === "authorised" ||
+      normalizedStatus === "accepted" ||
+      normalizedStatus === "transfer_successful";
+
     const redirectBase =
-      status === "successful" || status === "completed" || status === "success"
+      isSuccessStatus ||
+      normalizedStatus === "transfer_successful"
         ? `${process.env.FRONTEND_URL}/payments/savings/success`
         : `${process.env.FRONTEND_URL}/payments/savings/failed`;
 
