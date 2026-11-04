@@ -24,7 +24,18 @@ const LOAN_TIERS = {
   thirdLoan: 2.0,
 };
 
-// Interest rates by tier (annual percentage)
+/**
+ * BUSINESS RULE (2026-10): Loan interest is a FIXED 2% flat rate on the
+ * requested amount. It is collected UPFRONT by deducting it from the loan
+ * proceeds at payout (netPayout = principal - interest). It is NOT added
+ * to the repayment obligation — the member repays the principal only.
+ * Tier-based / InterestRule / SystemSettings rates no longer price loans;
+ * this constant is the single source of truth for new loan interest.
+ */
+const LOAN_INTEREST_RATE = 2;
+
+// Legacy tier-based rates — retained only for SystemSettings seeding and
+// historical reporting. New loan pricing no longer reads these.
 const INTEREST_RATES = {
   bronze: 10,
   silver: 8,
@@ -53,6 +64,7 @@ module.exports = {
   LATE_PENALTY_RATE,
   MIN_MONTHLY_SAVINGS,
   LOAN_TIERS,
+  LOAN_INTEREST_RATE,
   INTEREST_RATES,
   ELIGIBILITY,
   GROWTH_RATE_DEFAULT,

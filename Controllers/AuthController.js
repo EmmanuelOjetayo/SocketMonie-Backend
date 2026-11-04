@@ -12,11 +12,16 @@ const cookieOptions = {
   maxAge: 60 * 60 * 1000, // 1 hour
 };
 
+// CSRF token uses the same cross-site posture but must be JS-readable
+// (double-submit pattern — the SPA mirrors it into the X-CSRF-Token header).
+const { issueCsrfCookie } = require("../Middleware/csrfProtect");
+
 const Login = async (req, res, next) => {
   try {
     const result = await AuthService.LoginService(req.body);
 
     res.cookie("socketmoni_token", result.token, cookieOptions);
+    issueCsrfCookie(res);
 
     return res.status(200).json({
       success: true,
@@ -43,6 +48,7 @@ const VerifyOtp = async (req, res, next) => {
     const result = await AuthService.VerifyOTPService(req.body);
 
     res.cookie("socketmoni_token", result.token, cookieOptions);
+    issueCsrfCookie(res);
 
     return res.status(200).json({
       success: true,

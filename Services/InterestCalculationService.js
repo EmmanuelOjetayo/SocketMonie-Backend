@@ -1,10 +1,31 @@
-const InterestRule = require("../Models/InterestRuleModel");
-const SystemSettings = require("../Models/SystemSettingsModel");
 const AppError = require("../Utilis/AppError");
+const { LOAN_INTEREST_RATE } = require("../Config/constants");
 
 /**
  * Centralized Interest Calculation Service
+ *
+ * BUSINESS RULE (2026-10): Every new loan is priced at a FIXED 2% flat rate
+ * on the requested amount. The interest is collected UPFRONT by deducting it
+ * from the loan proceeds at payout and is NOT charged again during repayment
+ * (the member repays the approved principal only).
+ *
+ * The lookup-based pricing paths (InterestRule documents, tier-based
+ * SystemSettings rates) are intentionally bypassed so an admin-configurable
+ * rule can never move a new loan off the fixed 2% rate.
+ *
+ * Legacy admin rule-CRUD (below) still reads/writes InterestRule documents for
+ * reporting/audit, but is loaded lazily: the pricing path is a pure function
+ * and must not pull a mongoose model into every loan-application request.
  */
+const LOAN_INTEREST_RULE_NAME = "fixed_flat_2_percent";
+const LOAN_INTEREST_RULE_VERSION = "1.0";
+
+let InterestRule = null;
+const getRuleModel = () => {
+  if (!InterestRule) InterestRule = require("../Models/InterestRuleModel");
+  return InterestRule;
+};
+
 const calculateInterest = async ({
   loanType = "cooperative",
   userTier = "Bronze",
@@ -20,46 +41,15 @@ const calculateInterest = async ({
     };
   }
 
-  // 1. Check for specific active configured InterestRule matching loanType, tier, and score range
-  const matchedRule = await InterestRule.findOne({
-    isActive: true,
-    $and: [
-      { $or: [{ loanType: "all" }, { loanType }] },
-      { $or: [{ tier: "all" }, { tier: userTier }] },
-    ],
-    minSocketScore: { $lte: socketScore },
-    maxSocketScore: { $gte: socketScore },
-  }).sort({ priority: -1, createdAt: -1 });
-
-  if (matchedRule) {
-    const interestRate = matchedRule.interestRate;
-    const interestAmount = Math.round(Number(principalAmount) * (interestRate / 100));
-    return {
-      interestRate,
-      interestAmount,
-      ruleName: matchedRule.ruleName,
-      ruleVersion: matchedRule._id.toString(),
-    };
-  }
-
-  // 2. Fallback to SystemSettings tier/emergency defaults
-  const settings = await SystemSettings.findOne();
-  let interestRate = 5;
-
-  if (loanType === "emergency") {
-    interestRate = settings?.interestRates?.emergency || 5;
-  } else {
-    const tierKey = (userTier || "bronze").toLowerCase();
-    interestRate = settings?.interestRates?.[tierKey] || (tierKey === "platinum" ? 5 : tierKey === "gold" ? 6 : tierKey === "silver" ? 8 : 10);
-  }
-
+  // Fixed flat rate: interest = requestedLoanAmount * 0.02
+  const interestRate = LOAN_INTEREST_RATE;
   const interestAmount = Math.round(Number(principalAmount) * (interestRate / 100));
 
   return {
     interestRate,
     interestAmount,
-    ruleName: `default_${loanType}_${userTier.toLowerCase()}`,
-    ruleVersion: "system_default",
+    ruleName: LOAN_INTEREST_RULE_NAME,
+    ruleVersion: LOAN_INTEREST_RULE_VERSION,
   };
 };
 
@@ -74,7 +64,7 @@ const validateRuleNoOverlap = async (newRule, excludeRuleId = null) => {
     _id: excludeRuleId ? { $ne: excludeRuleId } : { $exists: true },
   };
 
-  const existingRules = await InterestRule.find(query);
+  const existingRules = await getRuleModel().find(query);
   for (const rule of existingRules) {
     // Check if score ranges overlap
     const overlap = Math.max(newRule.minSocketScore, rule.minSocketScore) <= Math.min(newRule.maxSocketScore, rule.maxSocketScore);
@@ -90,19 +80,19 @@ const validateRuleNoOverlap = async (newRule, excludeRuleId = null) => {
 const InterestCalculationService = {
   calculateInterest,
   validateRuleNoOverlap,
-  getRules: (filter = {}) => InterestRule.find(filter).sort({ priority: -1, createdAt: -1 }),
+  getRules: (filter = {}) => getRuleModel().find(filter).sort({ priority: -1, createdAt: -1 }),
   createRule: async (ruleData, userId) => {
     await validateRuleNoOverlap(ruleData);
-    return await InterestRule.create({ ...ruleData, createdBy: userId });
+    return await getRuleModel().create({ ...ruleData, createdBy: userId });
   },
   updateRule: async (ruleId, updates) => {
-    const rule = await InterestRule.findById(ruleId);
+    const rule = await getRuleModel().findById(ruleId);
     if (!rule) throw new AppError("Interest rule not found", 404);
     await validateRuleNoOverlap({ ...rule.toObject(), ...updates }, ruleId);
-    return await InterestRule.findByIdAndUpdate(ruleId, updates, { new: true });
+    return await getRuleModel().findByIdAndUpdate(ruleId, updates, { new: true });
   },
   deleteRule: async (ruleId) => {
-    return await InterestRule.findByIdAndDelete(ruleId);
+    return await getRuleModel().findByIdAndDelete(ruleId);
   },
 };
 

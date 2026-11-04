@@ -5,6 +5,10 @@ const formatValidationError = require("../Utilis/formatValidationError");
    const loginSchema = joi.object({
       email: joi.string().trim().email().lowercase().required(),
       password: joi.string().required(),
+      // Terms & Conditions / Privacy Policy acceptance is required before
+      // accessing the authenticated API surface.
+      termsAccepted: joi.boolean().valid(true).required(),
+      privacyAccepted: joi.boolean().valid(true).required(),
     });
     
 const LoginValidate = async(req, res, next)=>{
@@ -32,6 +36,9 @@ const signUpSchema = joi.object({
     .pattern(/[0-9]/)
     .pattern(/[!@#$%^&*(),.?":{}|<>]/)
     .required(),
+  // Terms & Conditions / Privacy Policy acceptance is mandatory at registration.
+  termsAccepted: joi.boolean().valid(true).required(),
+  privacyAccepted: joi.boolean().valid(true).required(),
 });
 
 

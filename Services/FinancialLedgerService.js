@@ -55,13 +55,13 @@ const getFinancialPosition = async (dateRange = {}) => {
   let totalSavingsDeposits = 0;
   let totalMembershipFeeRevenue = 0;
   let totalLoanInterestRevenue = 0;
+  let totalSubscriptionRevenue = 0;
   let totalWithdrawalFeeRevenue = 0;
   let totalLoanDisbursements = 0;
   let totalWithdrawalPayouts = 0;
   let totalOperatingExpenses = 0;
   let totalReferralExpenses = 0;
   let totalLoanRepayments = 0;
-  let totalMinutesContributions = 0;
   let startingCapital = 0;
 
   summaries.forEach((item) => {
@@ -82,14 +82,17 @@ const getFinancialPosition = async (dateRange = {}) => {
         totalMembershipFeeRevenue += amount;
         break;
       case "minutes_fee":
-        totalMinutesContributions += amount;
+        // Owner-approved classification: SocketMinutes → Subscription Revenue
+        totalSubscriptionRevenue += amount;
         break;
       case "loan_repayment_principal":
         totalLoanRepayments += amount;
         break;
       case "loan_repayment_interest":
+        // Fixed 2% interest is collected UPFRONT via the payout deduction and
+        // is not part of any repayment cash-in. Count it as revenue only —
+        // repayment collections come exclusively from loan_repayment_principal.
         totalLoanInterestRevenue += amount;
-        totalLoanRepayments += amount;
         break;
       case "withdrawal_fee":
         totalWithdrawalFeeRevenue += amount;
@@ -112,7 +115,7 @@ const getFinancialPosition = async (dateRange = {}) => {
     }
   });
 
-  const totalRevenue = totalMembershipFeeRevenue + totalLoanInterestRevenue + totalWithdrawalFeeRevenue;
+  const totalRevenue = totalMembershipFeeRevenue + totalLoanInterestRevenue + totalWithdrawalFeeRevenue + totalSubscriptionRevenue;
   const totalExpenses = totalOperatingExpenses + totalReferralExpenses;
   const netOperatingIncome = totalRevenue - totalExpenses;
   const netCashPosition = startingCapital + totalInflows - totalOutflows;
@@ -127,6 +130,8 @@ const getFinancialPosition = async (dateRange = {}) => {
       membershipFees: totalMembershipFeeRevenue,
       loanInterest: totalLoanInterestRevenue,
       withdrawalFees: totalWithdrawalFeeRevenue,
+      // Owner-approved classification: SocketMinutes → Subscription Revenue
+      subscriptionFees: totalSubscriptionRevenue,
     },
     expenses: {
       totalExpenses,
@@ -135,7 +140,6 @@ const getFinancialPosition = async (dateRange = {}) => {
     },
     memberContributions: {
       savingsDeposits: totalSavingsDeposits,
-      minutesContributions: totalMinutesContributions,
       loanRepayments: totalLoanRepayments,
     },
     disbursements: {

@@ -199,7 +199,16 @@ const applyForLoan = async ({
 
   const user = await LoanRepository.findUserById(userId);
 
-  // Calculate interest through centralized service
+  // Terms & Conditions / Privacy Policy acceptance is mandatory before applying.
+  if (!user || user.termsAccepted !== true || user.privacyAccepted !== true) {
+    throw new AppError("You must accept the Socket Monie Terms and Conditions and Privacy Policy before applying for a loan.", 403);
+  }
+
+  // BUSINESS RULE: Fixed 2% upfront interest. Calculated at request time on
+  // the requested amount, then collected UPFRONT by deducting it from the
+  // loan proceeds at payout. It is NOT added to the repayment obligation —
+  // the member repays the approved principal only.
+  //   requested = ₦100,000 → interest = ₦2,000 → payout = ₦98,000 → repay ₦100,000
   const interestCalc = await InterestCalculationService.calculateInterest({
     loanType,
     userTier: user.tier || "Bronze",
@@ -209,7 +218,7 @@ const applyForLoan = async ({
 
   const interestRate = interestCalc.interestRate;
   const interestAmount = interestCalc.interestAmount;
-  const totalRepayable = Number(amount) + interestAmount;
+  const totalRepayable = Number(amount);
   const disbursementAmount = Number(amount) - interestAmount;
 
   const activeStatuses = [
@@ -260,6 +269,21 @@ const applyForLoan = async ({
   let createdLoan;
   try {
     await session.withTransaction(async () => {
+      // Concurrency guard: touch the member doc inside the transaction (creates
+      // a write conflict that serializes concurrent applications) and re-check
+      // for an active loan inside the transaction before inserting (P0 item 18).
+      await LoanRepository.touchMemberForApplicationLock(userId, session);
+      const existingLoan = await LoanRepository.findActiveForUser(userId, session);
+      if (existingLoan) {
+        let message = "You already have an active or processing loan.";
+        if (existingLoan.status === "waiting_guarantor") {
+          message = "You have a loan application awaiting guarantor approval.";
+        } else if (existingLoan.status === "pending_review") {
+          message = "You already have a loan awaiting admin approval.";
+        }
+        throw new AppError(message, 400);
+      }
+
       const loanNumber = await LoanRepository.generateLoanNumber();
       const loanData = {
         userId,
@@ -517,9 +541,23 @@ const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
         throw new AppError("Loan is not awaiting admin approval.", 400);
       }
 
+      // Separation of duties (P1-002): the approving admin must have no
+      // personal stake in the loan.
+      if (adminUser?._id && String(loan.userId) === String(adminUser._id)) {
+        throw new AppError("You cannot approve your own loan application.", 403);
+      }
+
       activeGuarantors = loan.guarantors?.filter((g) => !g.isReplaced) || [];
       if (activeGuarantors.length !== 4 || !activeGuarantors.every((g) => g.status === "accepted")) {
         throw new AppError("All 4 guarantors must accept this loan before approval.", 400);
+      }
+      if (
+        adminUser?._id &&
+        activeGuarantors.some(
+          (g) => g.userId && String(g.userId) === String(adminUser._id)
+        )
+      ) {
+        throw new AppError("You cannot approve a loan in which you are a guarantor.", 403);
       }
 
       const disbursementAmount = loan.principalAmount - loan.interestAmount;
@@ -554,6 +592,10 @@ const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
   loan.approvedAt = new Date();
   loan.reviewedAt = new Date();
   loan.approvedBy = adminUser._id;
+  // Accountability (owner decision #5): record the admin who triggered the
+  // disbursement (the approval action is the human disbursement trigger,
+  // so it is recorded even when approving admin == disbursing admin).
+  loan.disbursedBy = adminUser._id || loan.approvedBy;
   loan.payoutStatus = "completed";
   loan.payoutReference = `PAYOUT-${Date.now()}`;
   loan.installments = installments;
@@ -619,6 +661,24 @@ const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
     ),
   ]);
 
+  // Audit trail for the approval decision (P1-002).
+  await logAudit({
+    userId: adminUser._id,
+    userEmail: adminUser.email,
+    userRole: adminUser.role,
+    action: "loan_approve",
+    targetType: "loan",
+    targetId: loan._id,
+    details: {
+      loanNumber: loan.loanNumber,
+      principalAmount: loan.principalAmount,
+      interestAmount: loan.interestAmount,
+      totalRepayable: loan.totalRepayable,
+      disbursementAmount: loan.disbursementAmount,
+      guarantorIds: guarantorUserIds,
+    },
+  });
+
   return loan;
 };
 
@@ -678,6 +738,15 @@ const processLoanRepayment = async ({
       if (totalPenalty > 0) {
         loan.totalRepayable = Math.round(loan.totalRepayable + totalPenalty);
         loan.remainingBalance = Math.round(loan.remainingBalance + totalPenalty);
+      }
+
+      // Never accept a repayment that exceeds the outstanding obligation
+      // (prevents overpayment / double-amount acceptance).
+      if (payment > loan.remainingBalance) {
+        throw new AppError(
+          `Payment of ₦${payment.toLocaleString()} exceeds the outstanding balance of ₦${loan.remainingBalance.toLocaleString()}.`,
+          400
+        );
       }
 
       loan.amountPaid += payment;

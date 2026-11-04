@@ -32,6 +32,20 @@ const SavingsRepository = {
     }, 0);
   },
 
+  // Withdrawal reservations that have not yet hit a "completed" record:
+  // pending admin approval or approved-but-not-paid-out (P2-002 double-spend fix).
+  getPendingWithdrawalDeductions: async (userId) => {
+    const pending = await Savings.find({
+      userId,
+      type: "withdrawal",
+      status: { $in: ["pending_approval", "approved"] },
+    });
+    return pending.reduce(
+      (sum, item) => sum + Number(item.amount) + Number(item.fee || 0),
+      0
+    );
+  },
+
   findCompletedDepositsSince: (userId, sinceDate) =>
     Savings.find({
       userId,

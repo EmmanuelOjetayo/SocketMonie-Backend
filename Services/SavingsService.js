@@ -7,6 +7,14 @@ const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID 
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
 
+// Available balance: completed net savings minus withdrawals already reserved
+// by pending/approved-but-unpaid requests (prevents concurrent double-spend).
+const getAvailableSavings = async (userId) => {
+  const netSavings = await SavingsRepository.getNetSavings(userId);
+  const reserved = await SavingsRepository.getPendingWithdrawalDeductions(userId);
+  return netSavings - reserved;
+};
+
 const getAverageMonthlySavings = async (userId) => {
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
@@ -112,11 +120,17 @@ const getSavingsSummary = async (userId) => {
   const tierMin = getMinCommitmentForTier(currentTier);
   const monthlyTarget = user?.monthlySavingsCommitment > 0 ? user.monthlySavingsCommitment : tierMin;
 
-  // Compute actual growth rate from savings history
   const growthRatePct = await computeMoMGrowthRate(userId);
+
+  // Available balance: net completed savings minus withdrawals already reserved
+  // by pending/approved-but-unpaid requests (P3 item 21/22 hardening).
+  const reservedBalance = await SavingsRepository.getPendingWithdrawalDeductions(userId);
+  const availableBalance = Math.max(0, Number(totalSaved) - Number(reservedBalance));
 
   return {
     totalSaved,
+    availableBalance,
+    reservedBalance,
     currentTier,
     monthlyTarget,
     monthlyContributed,
@@ -161,7 +175,7 @@ const withdrawFromSavings = async ({ userId, amount, method, bankDetails, pin })
     throw new AppError("Invalid transaction PIN.", 400);
   }
 
-  const netSavings = await SavingsRepository.getNetSavings(userId);
+  const netSavings = await getAvailableSavings(userId);
   const standardFee = WITHDRAWAL_FEE;
   const totalDeduction = Number(amount) + standardFee;
 
@@ -207,7 +221,7 @@ const requestWithdrawal = async ({ userId, amount, accountNumber, accountName, b
     throw new AppError("Please enter a valid amount.", 400);
   }
 
-  const netSavings = await SavingsRepository.getNetSavings(userId);
+  const netSavings = await getAvailableSavings(userId);
   const fee = WITHDRAWAL_FEE;
   const totalDeduction = Number(amount) + fee;
 

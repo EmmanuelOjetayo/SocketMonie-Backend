@@ -17,8 +17,8 @@ const LoanRepository = {
     return query;
   },
 
-  findActiveForUser: (userId) =>
-    Loan.findOne({
+  findActiveForUser: (userId, session = null) => {
+    const query = Loan.findOne({
       userId,
       status: {
         $in: [
@@ -31,7 +31,24 @@ const LoanRepository = {
           "recovery_120_days",
         ],
       },
-    }),
+    });
+    if (session) query.session(session);
+    return query;
+  },
+
+  // Serialization anchor for concurrent financial operations: touching the
+  // member document inside a MongoDB transaction creates a write conflict when
+  // two transactions touch the same member, forcing MongoDB to serialize them
+  // and retry — the retry re-runs the active-loan re-check inside the transaction.
+  touchMemberForApplicationLock: (userId, session = null) => {
+    const query = User.findOneAndUpdate(
+      { _id: userId },
+      { $set: { updatedAt: new Date() } },
+      { new: true }
+    );
+    if (session) query.session(session);
+    return query;
+  },
 
   findHistory: (filter, skip, limit) =>
     Loan.find(filter)

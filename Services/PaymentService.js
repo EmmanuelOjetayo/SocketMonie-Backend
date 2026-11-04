@@ -159,6 +159,51 @@ const verifyDeposit = async (userId, ref, transactionId) => {
   return { alreadyVerified: false, savings };
 };
 
+/**
+ * Server-side callback reconciliation (P0-001).
+ * Called from the Flutterwave redirect handler so a missed/delayed webhook
+ * still gets the deposit settled idempotently. Bound to the deposit record's
+ * own owner (the reference was generated server-side at initiation), so no
+ * unauthenticated ownership bypass is possible.
+ */
+const reconcileDepositByReference = async (ref, transactionId) => {
+  const lookupRef = String(ref || "").trim();
+  if (!lookupRef) return { state: "missing_reference" };
+
+  let pending = null;
+  try {
+    pending = await PaymentRepository.findSavingsByReference(lookupRef);
+  } catch (e) {
+    console.error("Callback reconciliation lookup failed:", e?.message || e);
+    return { state: "pending" };
+  }
+  if (!pending) return { state: "not_found" };
+  if (pending.status === "completed") return { state: "already_verified" };
+
+  try {
+    const result = await verifyDeposit(pending.userId, lookupRef, transactionId || null);
+    return { state: result.alreadyVerified ? "already_verified" : "completed" };
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (err?.statusCode === 400 && /not successful/i.test(message)) {
+      return { state: "failed", reason: "payment_not_successful" };
+    }
+    if (err?.statusCode === 400 && /amount mismatch/i.test(message)) {
+      return { state: "failed", reason: "amount_mismatch" };
+    }
+    if (err?.statusCode === 400 && /reference mismatch/i.test(message)) {
+      return { state: "failed", reason: "reference_mismatch" };
+    }
+    if (err?.statusCode === 400 && /currency/i.test(message)) {
+      return { state: "failed", reason: "currency_mismatch" };
+    }
+    // Provider lag / timeout / unexpected error: do NOT mark success or failure.
+    // Leave the deposit pending for the webhook or fallback reconciliation.
+    console.error("Callback reconciliation deferred:", message);
+    return { state: "pending" };
+  }
+};
+
 const handleDepositWebhook = async (data) => {
   const reference = data.tx_ref || data.reference;
   const transactionId = data.id;
@@ -248,16 +293,21 @@ const handleWithdrawalWebhook = async (data) => {
 
   const session = await mongoose.startSession();
   let withdrawal;
+  let didProcess = false;
   try {
     await session.withTransaction(async () => {
       withdrawal = await PaymentRepository.findWithdrawalByReference(reference, session);
       if (!withdrawal) return;
+
+      // Never let a late/retried event reverse or repeat a settled withdrawal.
+      if (withdrawal.status === "completed" || withdrawal.status === "failed") return;
 
       if (withdrawal.flutterwaveRef && withdrawal.flutterwaveRef !== String(transferId)) return;
 
       if (status === "successful" || status === "success") {
         withdrawal = await PaymentRepository.markCompleted("savings", withdrawal._id, transferId, { amount: settledAmount }, session);
         if (!withdrawal) return;
+        didProcess = true;
     await FinancialLedgerService.recordEntry({
       entryType: "outflow",
       accountCategory: "cash_asset",
@@ -284,16 +334,26 @@ const handleWithdrawalWebhook = async (data) => {
           session,
       });
     }
-      } else {
+      } else if (status === "failed" || status === "reversed") {
+        // Confirmed payout failure (not a mere delayed webhook): the
+        // reservation is released implicitly once the record is no longer
+        // pending_approval/approved — reversing it here would double-credit.
         withdrawal.status = "failed";
+        withdrawal.payoutFailedAt = new Date();
         await withdrawal.save({ session });
+        didProcess = true;
+      } else {
+        // Timeout/pending/unknown → wait for reconciliation; no state change.
+        return;
       }
     });
   } finally {
     await session.endSession();
   }
 
-  if (!withdrawal) return;
+  // Notify only when this event actually changed the withdrawal state —
+  // duplicate/replayed events are acknowledged silently.
+  if (!withdrawal || !didProcess) return;
 
   if (status === "successful" || status === "success") {
     await createNotification({
@@ -324,7 +384,7 @@ const handleWithdrawalWebhook = async (data) => {
       userId: withdrawal.userId,
       type: "savings",
       title: "Withdrawal Failed",
-      message: `Your withdrawal of ₦${settledAmount.toLocaleString()} failed. Please try again or contact support.`,
+      message: `Your withdrawal of ₦${Number(settledAmount || withdrawal.amount).toLocaleString()} failed. Please try again or contact support.`,
     });
   }
 };
@@ -513,30 +573,72 @@ const handleMinuteWebhook = async (data) => {
 
   if (pendingPayment.status === "completed") return;
 
-  // Settle ALL outstanding monthly obligations for this user.
+  // Settle exactly what this checkout paid for — never every outstanding
+  // obligation. The checkout priced the earliest arrears into ONE reference
+  // (stored total on the pending Savings record). We settle only the oldest
+  // obligations whose grossed-up total fits that budget; obligations created
+  // after checkout remain pending for their own payment (P0 over-settlement fix).
   const userId = pendingPayment.userId;
   const mongoose = require("mongoose");
   const Minutes = require("../Models/MinutesModel");
+  const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
+
   const session = await mongoose.startSession();
   let settledCount = 0;
+  let settledCurrentMonth = false;
   try {
     await session.withTransaction(async () => {
+      const currentOutstanding = await Minutes.find({
+        userId,
+        status: { $in: ["pending", "overdue", "failed"] },
+        category: "monthly_contribution",
+      })
+        .sort({ year: 1, month: 1 })
+        .session(session);
+      if (!currentOutstanding.length) return;
+
+      const budget = Number(pendingPayment.amount || 0);
+      const paid = Number(v.amount_settled ?? v.amount ?? amount);
+
+      // Underpayment: settle nothing. The record stays pending for the
+      // reconciliation cron or a manual review — never a partial free settlement.
+      if (!budget || paid + 0.01 < budget) return;
+
+      // Largest prefix of outstanding obligations (oldest first) whose
+      // grossed-up price still fits the checkout budget.
+      let settleCount = 0;
+      let sum = 0;
+      while (settleCount < currentOutstanding.length) {
+        sum += Number(currentOutstanding[settleCount].amount || 0);
+        const { totalPayable } = calculateFlutterwaveFee(sum);
+        if (totalPayable > budget) break;
+        settleCount += 1;
+      }
+      if (settleCount === 0) return;
+
+      const toSettle = currentOutstanding.slice(0, settleCount);
       const result = await Minutes.updateMany(
         {
-          userId,
-          status: { $in: ["pending", "overdue"] },
-          category: "monthly_contribution",
+          _id: { $in: toSettle.map((item) => item._id) },
+          status: { $in: ["pending", "failed", "overdue"] },
         },
         {
           $set: {
             status: "completed",
             transactionId: String(transactionId),
+            flutterwaveRef: String(transactionId),
             paidAt: new Date(),
           },
         },
         { session }
       );
       settledCount = result.modifiedCount || 0;
+
+      const now = new Date();
+      settledCurrentMonth = toSettle.some(
+        (item) =>
+          item.month === now.getMonth() + 1 && item.year === now.getFullYear()
+      );
 
       pendingPayment.status = "completed";
       pendingPayment.transactionId = String(transactionId);
@@ -548,7 +650,11 @@ const handleMinuteWebhook = async (data) => {
 
   if (settledCount === 0) return;
 
-  await PaymentRepository.updateUser(userId, { thisMonthMinutesUnpaid: false });
+  // thisMonthMinutesUnpaid clears ONLY when the current month's obligation
+  // was actually settled — not merely because some arrears were paid.
+  if (settledCurrentMonth) {
+    await PaymentRepository.updateUser(userId, { thisMonthMinutesUnpaid: false });
+  }
 
   await createNotification({
     userId,
@@ -586,6 +692,10 @@ const processWebhook = async (rawBody, signature, event) => {
   const signatureValid =
     providedBuf.length === expectedBuf.length && crypto.timingSafeEqual(providedBuf, expectedBuf);
   if (!signatureValid) {
+    // Alert on signature mismatches without logging the secret or body contents.
+    console.error(
+      `Webhook signature mismatch: header "${providedBuf.length} bytes" did not match the configured secret hash.`
+    );
     throw new AppError("Invalid webhook signature", 401);
   }
 
@@ -707,6 +817,7 @@ const PaymentService = {
   verifyDeposit,
   processWebhook,
   reconcilePaymentByReference,
+  reconcileDepositByReference,
   verifyBankAccount,
   getBanks: async () => (await getBanks()).data,
 };

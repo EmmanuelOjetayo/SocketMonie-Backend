@@ -143,6 +143,14 @@ const LoanSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Separation-of-duties / traceability (owner decision #5): the admin who
+    // triggered the disbursement is recorded independently of the approver.
+    disbursedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Users",
+      default: null,
+    },
+
     reviewedAt: Date,
     approvedAt: Date,
 

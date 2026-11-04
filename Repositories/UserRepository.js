@@ -40,11 +40,28 @@ const UpdateSetPin = async (reqUserID, hashedPin, options = {}) => {
     return response
 }
 
+// Duplicate identity prevention (owner-approved KYC decision): an NIN/BVN may
+// be linked to only one member account.
+const findUserWithIdentityValue = async (excludeUserId, { nin, bvn }) => {
+    const identities = [];
+    if (nin) identities.push({ nin: String(nin).trim() });
+    if (bvn) identities.push({ bvn: String(bvn).trim() });
+    if (!identities.length) return null;
+
+    return await Users.findOne({
+        _id: { $ne: excludeUserId },
+        $or: identities,
+    })
+        .select("_id fullName")
+        .lean();
+}
+
 
 const UserRepository ={
     findUserDetails,
     UpdateDetails,
-    UpdateSetPin
+    UpdateSetPin,
+    findUserWithIdentityValue
 }
 module.exports={
     UserRepository

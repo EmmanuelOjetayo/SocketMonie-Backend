@@ -29,13 +29,15 @@ const GuarantorRepository = {
   },
 
   findPendingForUser: (userId) =>
-    Guarantor.find({ guarantorUserId: userId, status: "pending" })
+    Guarantor.find({ guarantorUserId: userId, status: "pending", isReplaced: false })
       .populate("loanId", "loanNumber principalAmount interestAmount interestRate totalRepayable durationMonths purpose loanType status createdAt")
       .populate("applicantId", "fullName email phone referralCode profileImage kycStatus createdAt")
       .lean(),
 
   findSummaryGuarantees: (userId) =>
-    Guarantor.find({ guarantorUserId: userId, status: { $in: ["accepted", "active"] } }),
+    // Exclude replaced guarantees so superseded records never inflate the
+    // guarantor summary or block new guarantee capacity (P0-003).
+    Guarantor.find({ guarantorUserId: userId, status: { $in: ["accepted", "active"] }, isReplaced: false }),
 
   findUserScore: (userId) => User.findById(userId).select("score socketScore"),
 

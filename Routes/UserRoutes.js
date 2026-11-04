@@ -1,5 +1,5 @@
 const express = require("express");
-const { upload } = require("../Config/cloudinary");
+const { upload, kycFileFilter } = require("../Config/cloudinary");
 const routeProtect = require("../Middleware/AuthMiddleware");
 const {
   GetUserInfo,
@@ -9,6 +9,9 @@ const {
   forgotPin,
   resetPin,
   UpdatePersonalInfo,
+  GetUserDraft,
+  SaveUserDraft,
+  DeleteUserDraft,
 } = require("../Controllers/UserController");
 
 const  UserValidator = require("../Middleware/UserValidate");
@@ -21,4 +24,9 @@ UserRoutes.post('/pin', routeProtect, UserValidator.SetPinValidate, SetPin);
 UserRoutes.post('/pin/forgot', UserValidator.ForgotPinValidate, forgotPin);
 UserRoutes.post('/pin/reset', routeProtect, UserValidator.ResetPinValidate, resetPin);
 UserRoutes.put('/bank-details', routeProtect, UserValidator.BankDetailsValidate, updateBankDetails);
+
+// Server-side draft sync (owner decision #4) — user-scoped, 30-day inactivity expiry
+UserRoutes.get('/draft', routeProtect, GetUserDraft);
+UserRoutes.put('/draft', routeProtect, SaveUserDraft);
+UserRoutes.delete('/draft', routeProtect, DeleteUserDraft);
 module.exports = UserRoutes;

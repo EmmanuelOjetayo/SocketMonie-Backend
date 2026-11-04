@@ -1,5 +1,6 @@
 const { ScoreRepository } = require("../Repositories/ScoreRepository");
 const AppError = require("../Utilis/AppError");
+const { getMinCommitmentForTier } = require("../Utilis/tierService");
 const {
   calculateWeightedScore,
   normalizeScore,
@@ -19,7 +20,13 @@ const evaluateSavingsDiscipline = async (userId, user) => {
 
   const deposits = await ScoreRepository.findUserDepositsSince(userId, sixMonthsAgo);
   const monthlyCommitment = Number(user.monthlySavingsCommitment);
-  if (!Number.isFinite(monthlyCommitment) || monthlyCommitment <= 0 || !user.createdAt) {
+  const fallbackCommitment = Number(
+    (await getMinCommitmentForTier(user.currentTier || "Bronze")) || 0
+  );
+  const expectedCommitment = Number.isFinite(monthlyCommitment) && monthlyCommitment > 0
+    ? monthlyCommitment
+    : fallbackCommitment;
+  if (!Number.isFinite(expectedCommitment) || expectedCommitment <= 0 || !user.createdAt) {
     return { score: 0, status: "insufficient_data" };
   }
 
@@ -86,7 +93,6 @@ const calculateScore = async (userId) => {
   const activeComponents = config.components.filter((c) => c.isActive !== false);
 
   const evaluatedComponents = [];
-  let weightedTotal = 0;
 
   for (const comp of activeComponents) {
     let evaluation;
@@ -124,9 +130,18 @@ const calculateScore = async (userId) => {
 
   const weightedResult = calculateWeightedScore(evaluatedComponents);
 
+  // Weight redistribution over scoreable components only (fix for users being
+  // dragged toward zero by components whose formulas are unconfigured or whose
+  // data is insufficient). Unscoreable components are still reported per-component.
+  const scoreable = weightedResult.components.filter((c) => c.status === "configured");
+  const effectiveWeight = scoreable.reduce((total, c) => total + Number(c.weight || 0), 0);
+  const contributionSum = scoreable.reduce((total, c) => total + Number(c.contribution || 0), 0);
+  const overallScore =
+    effectiveWeight > 0 ? Number(((contributionSum / effectiveWeight) * 100).toFixed(2)) : 0;
+
   return {
     userId,
-    overallScore: weightedResult.overallScore,
+    overallScore,
     components: weightedResult.components,
     configurationVersion: config.version,
     calculatedAt: new Date(),

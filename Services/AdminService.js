@@ -336,6 +336,11 @@ const approveWithdrawal = async (withdrawalId, adminUser = {}, clientIp = "", us
       user = await AdminRepository.findUserDocument(withdrawal.userId, session);
       if (!user) throw new AppError("User not found.", 404);
 
+      // Separation of duties: an admin cannot approve their own withdrawal.
+      if (adminUser?._id && String(withdrawal.userId) === String(adminUser._id)) {
+        throw new AppError("You cannot approve your own withdrawal request.", 403);
+      }
+
       const fee = withdrawal.fee || 0;
       totalDeducted = withdrawal.amount + fee;
 
@@ -440,6 +445,23 @@ const rejectWithdrawal = async (withdrawalId, reason, adminUser = {}) => {
   withdrawal.rejectionReason = reason;
   withdrawal.rejectedAt = new Date();
   await withdrawal.save();
+
+  if (adminUser?._id) {
+    await logAudit({
+      userId: adminUser._id,
+      userEmail: adminUser.email,
+      userRole: adminUser.role,
+      action: "withdrawal_reject",
+      targetType: "savings",
+      targetId: withdrawal._id,
+      details: {
+        amount: withdrawal.amount,
+        fee: withdrawal.fee || 0,
+        reason,
+        rejectedBy: adminUser._id,
+      },
+    });
+  }
 
   await createNotification({
     userId: withdrawal.userId,

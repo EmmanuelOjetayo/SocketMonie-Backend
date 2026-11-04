@@ -5,6 +5,7 @@ const genOTP = require("../Utilis/genOTP")
 const sendEmail = require("../Utilis/sendEmail")
 const { logAudit } = require("../Utilis/auditLogger")
 const forgotPasswordTemplate = require("../Utilis/emailTemplates/forgotPassword"); 
+const { cloudinary } = require("../Config/cloudinary");
 
 const maskId = (value) => (value ? `********${String(value).slice(-4)}` : null);
 const UserInfo = async(id)=>{
@@ -23,16 +24,43 @@ const UserInfo = async(id)=>{
 const KYCUploadService = async (reqBody, file, reqUserID) => {
   if (!file?.path) throw new AppError('Uploaded document could not be stored', 400);
 
+  // Owner-approved KYC policy: NIN is mandatory, BVN is optional.
+  const nin = reqBody.nin ? String(reqBody.nin).trim() : null;
+  const bvn = reqBody.bvn ? String(reqBody.bvn).trim() : null;
+  if (!nin) throw new AppError('Your NIN is required to verify your identity.', 400);
+  if (bvn && !/^\d{11}$/.test(bvn)) throw new AppError('BVN must be exactly 11 digits.', 400);
+
+  // No duplicate identity records across accounts (owner-approved decision).
+  const duplicate = await UserRepository.findUserWithIdentityValue(reqUserID, { nin, bvn });
+  if (duplicate) {
+    throw new AppError('This identity number is already linked to another member account.', 409);
+  }
+
     const updateData = {
     documentType: reqBody.documentType,
     documentUrl: file.path,
     kycStatus: 'pending_review',
+    kycRejectionReason: null, // re-uploads re-enter the admin verification queue cleanly
     kycUploadedAt: new Date(),
     };
 
-  if (reqBody.bvn) updateData.bvn = reqBody.bvn;
-  if (reqBody.nin) updateData.nin = reqBody.nin;
-  const updatedUser = await UserRepository.UpdateDetails(reqUserID, updateData, { includeSensitive: true });
+  if (nin) updateData.nin = nin;
+  if (bvn) updateData.bvn = bvn;
+  let updatedUser;
+  try {
+    updatedUser = await UserRepository.UpdateDetails(reqUserID, updateData, { includeSensitive: true });
+  } catch (err) {
+    // Orphan cleanup (KYC deep lifecycle): if DB persistence fails after a
+    // successful upload, delete the newly uploaded asset so no orphan remains.
+    try {
+      if (file?.public_id) {
+        await cloudinary.uploader.destroy(file.public_id);
+      }
+    } catch (cleanupErr) {
+      console.error("KYC orphan cleanup failed:", cleanupErr?.message || cleanupErr);
+    }
+    throw err;
+  }
   if (!updatedUser) throw new AppError('User account not found', 404);
 
     return {

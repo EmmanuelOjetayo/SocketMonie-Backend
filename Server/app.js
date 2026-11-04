@@ -99,6 +99,7 @@ const corsOptions = {
   allowedHeaders: [
     "Content-Type",
     "Authorization",
+    "X-CSRF-Token",
   ],
 
   optionsSuccessStatus: 204,
@@ -152,6 +153,11 @@ app.use(hpp());
 
 // Prevent NoSQL / MongoDB operator injection (e.g. { "$gt": "" } in req.body/query)
 app.use(mongoSanitize);
+
+// CSRF protection for state-changing requests (double-submit token + origin
+// allowlist). Must run after cookieParser so req.cookies is available.
+const { csrfProtect } = require("../Middleware/csrfProtect");
+app.use(csrfProtect);
 
 // Global rate limiter: 100 requests per 5 minutes (webhook excluded)
 // CORS/preflight is handled BEFORE this middleware.

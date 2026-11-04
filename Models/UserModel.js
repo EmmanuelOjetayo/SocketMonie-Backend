@@ -60,6 +60,13 @@ thisMonthMinutesUnpaid: {
         enum: ["completed", "pending", "failed", "suspended"],
         default: "pending",
     },
+    // Terms & Conditions / Privacy Policy acceptance (consent tracking)
+    termsAccepted: { type: Boolean, default: false },
+    privacyAccepted: { type: Boolean, default: false },
+    termsAcceptedAt: { type: Date, default: null },
+    privacyAcceptedAt: { type: Date, default: null },
+    termsVersion: { type: String, default: null },
+    privacyVersion: { type: String, default: null },
     socketScore: {
         type: Number,
         default: 0,

@@ -1,4 +1,47 @@
 const { UserService } = require("../Services/UserService.js")
+const { DraftService } = require("../Services/DraftService");
+
+const GetUserDraft = async (req, res) => {
+  try {
+    const kind = req.query.kind === "onboarding" ? "onboarding" : "loan_application";
+    const draft = await DraftService.GetUserDraftService(req.user._id, kind);
+    return res.status(200).json({ success: true, data: { draft: draft } });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : "Failed to load draft",
+      error: err.statusCode ? undefined : err.message,
+    });
+  }
+};
+
+const SaveUserDraft = async (req, res) => {
+  try {
+    const kind = req.body?.kind === "onboarding" ? "onboarding" : "loan_application";
+    const draft = await DraftService.SaveUserDraftService(req.user._id, kind, req.body?.data);
+    return res.status(200).json({ success: true, message: "Draft saved", data: { draft } });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : "Failed to save draft",
+      error: err.statusCode ? undefined : err.message,
+    });
+  }
+};
+
+const DeleteUserDraft = async (req, res) => {
+  try {
+    await DraftService.DeleteUserDraftService(req.user._id);
+    return res.status(200).json({ success: true, message: "Draft cleared" });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : "Failed to clear draft",
+      error: err.statusCode ? undefined : err.message,
+    });
+  }
+};
+
 const GetUserInfo = async (req, res) => {
   try {
     const userObj = await UserService.UserInfo(req.user._id)
@@ -139,4 +182,4 @@ const UpdatePersonalInfo = async (req, res) => {
 };
 
 
-module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo,  updateProfile };
+module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft };

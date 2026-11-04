@@ -52,6 +52,42 @@ exports.paymentCallback = async (req, res) => {
         ? `${process.env.FRONTEND_URL}/payments/savings/success`
         : `${process.env.FRONTEND_URL}/payments/savings/failed`;
 
+    // P0-001: settle the deposit server-side (idempotent) BEFORE redirecting,
+    // so a missed/delayed webhook can't leave the payment unrecorded.
+    // Outcome is judged by authoritative Flutterwave verification, never by
+    // the callback query params.
+    if (ref) {
+      try {
+        const reconcile = await PaymentService.reconcileDepositByReference(ref, txId);
+        if (reconcile.state === "completed" || reconcile.state === "already_verified") {
+          params.push(`verified=1`);
+          // Server-verified success wins over any callback status param.
+          return res.redirect(
+            `${process.env.FRONTEND_URL}/payments/savings/success?${params.join("&")}`
+          );
+        }
+        if (reconcile.state === "failed") {
+          params.push(`reason=reconciliation_${reconcile.reason || "failed"}`);
+          return res.redirect(
+            `${process.env.FRONTEND_URL}/payments/savings/failed?${params.join("&")}`
+          );
+        }
+        if (reconcile.state === "not_found") {
+          params.push(`reason=reference_not_found`);
+          return res.redirect(
+            `${process.env.FRONTEND_URL}/payments/savings/failed?${params.join("&")}`
+          );
+        }
+        // state === "pending": provider verification unavailable — redirect to the
+        // success page, which re-verifies server-side on load and routes to
+        // failed/pending as appropriate. Never claim success on the callback alone.
+      } catch (err) {
+        // Any unexpected reconciliation failure keeps the normal redirect flow;
+        // webhook + frontend re-verification remain the safety net.
+        console.error("Callback reconciliation error:", err?.message || err);
+      }
+    }
+
     return res.redirect(`${redirectBase}?${params.join("&")}`);
   } catch (err) {
     console.error("Callback error:", err);

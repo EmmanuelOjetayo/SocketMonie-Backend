@@ -16,8 +16,13 @@ const generateUniqueReferralCode = () => {
 };
 const RegisterService = async(userData)=>{
 
-        const {fullName, email, phone, referralCode, password} = userData;
+        const {fullName, email, phone, referralCode, password, termsAccepted, privacyAccepted} = userData;
         
+    // Terms & Conditions / Privacy Policy acceptance is mandatory at registration.
+    if (termsAccepted !== true || privacyAccepted !== true) {
+        throw new AppError("You must accept the Socket Monie Terms and Conditions and Privacy Policy to register.", 400);
+    }
+
     // 1. Check for Duplicate Email and Phone
         const existingEmail = await AuthRepository.findByEntity("email", email);
         if (existingEmail) throw new AppError("Email already exists.", 409);
@@ -60,7 +65,13 @@ const RegisterService = async(userData)=>{
               otpExpiresAt,
               isVerified: false,
               membershipFeePaid: false,
-              status: "pending"
+              status: "pending",
+              termsAccepted: true,
+              privacyAccepted: true,
+              termsAcceptedAt: new Date(),
+              privacyAcceptedAt: new Date(),
+              termsVersion: process.env.TERMS_VERSION || "1.0",
+              privacyVersion: process.env.PRIVACY_VERSION || "1.0",
             }, { session });
 
             await ReferralRepository.createRegistration({
@@ -118,6 +129,10 @@ const LoginService = async({email, password})=>{
     }
     if (foundUser.status === "suspended") {
       throw new AppError("Your account has been suspended. Please contact support.", 400);
+    }
+    // Terms & Conditions / Privacy Policy acceptance is mandatory before access.
+    if (foundUser.termsAccepted !== true || foundUser.privacyAccepted !== true) {
+      throw new AppError("Please accept the Socket Monie Terms and Conditions and Privacy Policy before accessing your account.", 403);
     }
     
     const user = foundUser.toObject();

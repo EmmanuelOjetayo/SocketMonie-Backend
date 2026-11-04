@@ -23,10 +23,21 @@ const storage = new CloudinaryStorage({
   },
 });
 
+// Defense-in-depth: restrict by MIME type as well as extension (Cloudinary's
+// allowed_formats enforces extensions; this rejects clearly-invalid payloads).
+const allowedMimeTypes = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
+const kycFileFilter = (req, file, cb) => {
+  if (!allowedMimeTypes.includes(file.mimetype)) {
+    return cb(new Error("Unsupported file type. Allowed formats: JPEG, PNG, PDF."));
+  }
+  cb(null, true);
+};
+
 // Multer upload middleware
 const upload = multer({
   storage: storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: kycFileFilter,
 });
 
-module.exports = { cloudinary, upload };
+module.exports = { cloudinary, upload, kycFileFilter };

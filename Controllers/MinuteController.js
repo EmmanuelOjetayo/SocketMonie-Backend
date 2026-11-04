@@ -9,6 +9,7 @@ const { logAudit } = require("../Utilis/auditLogger");
 const {
   createNotification,
 } = require("../Utilis/notificationHelper");
+const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 
 const MONTHLY_MINUTES_AMOUNT = 500;
 
@@ -307,36 +308,8 @@ function calculateOutstandingAmount(
   );
 }
 
-/**
- * ---------------------------------------------------------
- * Flutterwave processing fee (gross-up so the member covers it)
- * ---------------------------------------------------------
- *
- * This assumes the member pays the processing fee.
- *
- * Preserves the existing SocketMonnie pricing model:
- * 1.5% + ₦100 (waived under ₦2,500), capped at ₦2,000.
- */
-function calculateFlutterwaveFee(amount) {
-  const percentage = 0.015;
-  const fixedFee = amount >= 2500 ? 100 : 0;
-  const cap = 2000;
-
-  // Standard gross-up formula
-  let totalPayable = Math.ceil((amount + fixedFee) / (1 - percentage));
-  let fee = totalPayable - amount;
-
-  // Apply maximum cap of ₦2,000 on the fee
-  if (fee > cap) {
-    fee = cap;
-    totalPayable = amount + cap;
-  }
-
-  return {
-    fee,
-    totalPayable,
-  };
-}
+// Flutterwave processing fee helper moved to Utilis/flutterwaveFee.js
+// (single source of truth — PaymentService shares the same formula).
 
 // Backward-compat alias (same formula, old name).
 /**

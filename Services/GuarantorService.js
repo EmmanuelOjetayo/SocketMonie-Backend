@@ -144,14 +144,24 @@ const respondToRequest = async ({ userId, clientIp, body }) => {
     throw new AppError(`This request has already been ${guarantorRequest.status}.`, 400);
   }
 
-  if (guarantorRequest.tokenExpiresAt && new Date() > guarantorRequest.tokenExpiresAt) {
-    guarantorRequest.status = "expired";
-    await guarantorRequest.save();
-    throw new AppError("Guarantor request has expired.", 400);
-  }
-
   const loan = await GuarantorRepository.findLoan(guarantorRequest.loanId);
   if (!loan) throw new AppError("Loan not found.", 404);
+
+  if (guarantorRequest.tokenExpiresAt && new Date() > guarantorRequest.tokenExpiresAt) {
+    // Persist expiry on BOTH the standalone request and the embedded loan entry.
+    // Previously only the standalone doc was marked, leaving the embedded entry
+    // stuck in "pending" and permanently blocking loan replacement (P0-003).
+    guarantorRequest.status = "expired";
+    const expiredGuarantor = loan.guarantors?.find(
+      (item) => item.verificationToken === guarantorRequest.verificationToken
+    );
+    if (expiredGuarantor && expiredGuarantor.status === "pending") {
+      expiredGuarantor.status = "expired";
+    }
+    await GuarantorRepository.saveGuarantor(guarantorRequest);
+    await GuarantorRepository.saveLoan(loan);
+    throw new AppError("Guarantor request has expired.", 400);
+  }
 
   if (loan.status !== "waiting_guarantor") {
     throw new AppError("This loan application is no longer awaiting guarantor responses.", 400);

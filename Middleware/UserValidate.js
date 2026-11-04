@@ -4,8 +4,8 @@ const AppError = require("../Utilis/AppError");
 const formatValidationError = require("../Utilis/formatValidationError");
 const kycSchema = joi.object({
   documentType: joi.string().valid('nin', 'voters_card', 'passport', 'drivers_license').required(),
-  bvn: joi.string().pattern(/^\d{11}$/).optional(),
-  nin: joi.string().pattern(/^\d{11}$/).optional(),
+  bvn: joi.string().pattern(/^\d{11}$/).optional(), // Owner decision: BVN optional
+  nin: joi.string().pattern(/^\d{11}$/).required(), // Owner decision: NIN mandatory
 });
 
 const KYCUploadValidate = (req, res, next) => {
