@@ -187,10 +187,33 @@ const UpdatePersonalInfo = async (reqBody, reqUserID) => {
     return { user };
 }
 
+// Terms & Conditions / Privacy Policy acceptance capture (for members whose
+// stored flags predate enforcement, e.g. accounts created before Batch F).
+const AcceptTermsService = async (reqUserID, termsAccepted, privacyAccepted) => {
+    if (termsAccepted !== true || privacyAccepted !== true) {
+        throw new AppError("Terms and Conditions acceptance is required.", 400);
+    }
+    const user = await UserRepository.UpdateDetails(
+        reqUserID,
+        {
+            termsAccepted: true,
+            privacyAccepted: true,
+            termsAcceptedAt: new Date(),
+            privacyAcceptedAt: new Date(),
+            termsVersion: process.env.TERMS_VERSION || "1.0",
+            privacyVersion: process.env.PRIVACY_VERSION || "1.0",
+        },
+        { includeSensitive: true }
+    );
+    if (!user) throw new AppError("User not found", 404);
+    return { user };
+}
+
 const UserService = {
     UserInfo, KYCUploadService, SetPinService, BankDetailService,
-    ForgotPin, ResetPin, UpdateProfile, UpdatePersonalInfo
+    ForgotPin, ResetPin, UpdateProfile, UpdatePersonalInfo, AcceptTermsService
 }
+
 
 module.exports ={
     UserService, 

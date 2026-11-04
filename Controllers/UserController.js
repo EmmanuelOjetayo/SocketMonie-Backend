@@ -42,6 +42,24 @@ const DeleteUserDraft = async (req, res) => {
   }
 };
 
+const AcceptTerms = async (req, res) => {
+  try {
+    const { termsAccepted, privacyAccepted } = req.body;
+    const result = await UserService.AcceptTermsService(req.user._id, termsAccepted, privacyAccepted);
+    return res.status(200).json({
+      success: true,
+      message: "Terms and Conditions and Privacy Policy accepted.",
+      data: { user: result.user },
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : "Failed to accept terms",
+      error: err.statusCode ? undefined : err.message,
+    });
+  }
+};
+
 const GetUserInfo = async (req, res) => {
   try {
     const userObj = await UserService.UserInfo(req.user._id)
@@ -182,4 +200,4 @@ const UpdatePersonalInfo = async (req, res) => {
 };
 
 
-module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft };
+module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms };

@@ -12,6 +12,7 @@ const {
   GetUserDraft,
   SaveUserDraft,
   DeleteUserDraft,
+  AcceptTerms,
 } = require("../Controllers/UserController");
 
 const  UserValidator = require("../Middleware/UserValidate");
@@ -29,4 +30,7 @@ UserRoutes.put('/bank-details', routeProtect, UserValidator.BankDetailsValidate,
 UserRoutes.get('/draft', routeProtect, GetUserDraft);
 UserRoutes.put('/draft', routeProtect, SaveUserDraft);
 UserRoutes.delete('/draft', routeProtect, DeleteUserDraft);
+
+// Terms & Conditions / Privacy Policy acceptance capture (auth-protected)
+UserRoutes.patch('/terms/accept', routeProtect, AcceptTerms);
 module.exports = UserRoutes;
