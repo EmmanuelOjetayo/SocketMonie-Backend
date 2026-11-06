@@ -1,5 +1,4 @@
 const { Capital } = require("../Models/CapitalModel");
-const { FinancialLedgerService } = require("./FinancialLedgerService");
 const AppError = require("../Utilis/AppError");
 
 /**
@@ -11,15 +10,17 @@ const AppError = require("../Utilis/AppError");
  * @param {String} referenceId - Related expense/loan ID
  * @param {String} referenceType - Type of reference (expense, loan, etc.)
  */
-const addCapital = async ({ amount, source, description, adminId, referenceId = null, referenceType = "" }) => {
+const addCapital = async ({ amount, source, description, adminId, referenceId = null, referenceType = "" }, session = null) => {
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
     throw new AppError("Capital amount must be positive.", 400);
   }
 
-  const session = await Capital.findOne().session();
-  // Actually we need the session differently - let me fix this
-  // Let me just create the capital record and financial ledger entry
-  
+  // Capital movements are tracked in the Capital collection itself; the
+  // financial ledger entry for the underlying event is written by the caller
+  // (e.g. ExpenseService) so every financial event gets exactly one entry.
+  if (session) {
+    return await Capital.create([{ amount: Number(amount), source, description, adminId, referenceId, referenceType }], { session }).then((docs) => docs[0]);
+  }
   const capital = await Capital.create({
     amount: Number(amount),
     source,
@@ -27,19 +28,6 @@ const addCapital = async ({ amount, source, description, adminId, referenceId = 
     adminId,
     referenceId,
     referenceType,
-  });
-
-  // Also record in financial ledger
-  await FinancialLedgerService.recordEntry({
-    entryType: "inflow",
-    accountCategory: "capital",
-    activityType: `${source}_revenue`,
-    amount: Number(amount),
-    reference: `${source}_${capital._id}`,
-    userId: adminId,
-    relatedId: capital._id,
-    relatedModel: "Capital",
-    notes: description || `${source} revenue`,
   });
 
   return capital;
@@ -54,11 +42,17 @@ const addCapital = async ({ amount, source, description, adminId, referenceId = 
  * @param {String} referenceId - Related expense/loan ID
  * @param {String} referenceType - Type of reference
  */
-const deductCapital = async ({ amount, source, description, adminId, referenceId = null, referenceType = "" }) => {
+const deductCapital = async ({ amount, source, description, adminId, referenceId = null, referenceType = "" }, session = null) => {
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
     throw new AppError("Capital amount must be positive.", 400);
   }
 
+  // Movement log only — the caller owns the single financial-ledger entry
+  // (writing one here double-counted outflows: `operating_expense` +
+  // `expense_deduction` for the same expense).
+  if (session) {
+    return await Capital.create([{ amount: -Number(amount), source, description, adminId, referenceId, referenceType }], { session }).then((docs) => docs[0]);
+  }
   const capital = await Capital.create({
     amount: -Number(amount), // Negative amount for deduction
     source,
@@ -66,19 +60,6 @@ const deductCapital = async ({ amount, source, description, adminId, referenceId
     adminId,
     referenceId,
     referenceType,
-  });
-
-  // Also record in financial ledger
-  await FinancialLedgerService.recordEntry({
-    entryType: "outflow",
-    accountCategory: "capital",
-    activityType: `${source}_deduction`,
-    amount: Number(amount),
-    reference: `${source}_${capital._id}`,
-    userId: adminId,
-    relatedId: capital._id,
-    relatedModel: "Capital",
-    notes: description || `${source} deduction`,
   });
 
   return capital;

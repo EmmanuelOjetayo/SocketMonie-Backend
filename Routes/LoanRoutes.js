@@ -31,6 +31,12 @@ loanRoutes.post(
 );
 
 loanRoutes.post(
+  "/:loanId/cancel",
+  LoanValidate.validateCancelLoan,
+  loanController.cancelLoan
+);
+
+loanRoutes.post(
   "/repay/initialize",
   LoanValidate.validateRepayInitialize,
   loanController.initializeLoanRepayment

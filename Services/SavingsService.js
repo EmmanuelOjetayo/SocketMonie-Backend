@@ -4,6 +4,7 @@ const { getMinCommitmentForTier, getTierBySavings, canUpgradeToTier } = require(
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
+const { ReferralService } = require("./ReferralService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
 
@@ -373,6 +374,10 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
     if (!user) {
       throw new AppError("User not found.", 404);
     }
+
+    // Workflow K: a paid membership fee may qualify a pending referral (idempotent,
+    // evaluates the configured qualification event; safe for replays).
+    await ReferralService.processQualification(userId, "membership_fee_paid");
 
     // Ownership: the verified tx must belong to this user (via stored ref or FLW meta).
     const metaUserId = String(payment?.meta?.userId || payment?.metadata?.userId || payment?.meta?.user_id || "");

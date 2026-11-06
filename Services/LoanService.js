@@ -375,6 +375,82 @@ const applyForLoan = async ({
 /**
  * Replace a rejected guarantor with a new eligible guarantor.
  */
+/**
+ * Withdraw (cancel) a loan application that is still awaiting guarantors.
+ * This is the guaranteed exit from "waiting_guarantor": without it a member
+ * whose guarantors never respond could be permanently blocked from applying
+ * again (findActiveForUser keeps counting waiting_guarantor applications).
+ * The loan is marked "withdrawn" (not "rejected" — admin rejection is a
+ * separate review decision), pending guarantor requests are closed, and all
+ * non-replaced guarantors are notified that the request is void.
+ */
+const cancelApplication = async ({ userId, loanId, reason }) => {
+  const session = await mongoose.startSession();
+  let cancelledLoan;
+
+  try {
+    await session.withTransaction(async () => {
+      const loan = await LoanRepository.findById(loanId, session);
+      if (!loan) throw new AppError("Loan not found.", 404);
+
+      if (loan.userId.toString() !== userId.toString()) {
+        throw new AppError("You are not authorized to cancel this loan application.", 403);
+      }
+
+      if (loan.status !== "waiting_guarantor") {
+        throw new AppError("Only a loan application that is still awaiting guarantors can be withdrawn.", 400);
+      }
+
+      loan.status = "withdrawn";
+      loan.rejectionReason = reason || "Withdrawn by applicant";
+      loan.reviewedAt = new Date();
+
+      // Close every still-pending guarantor request (standalone docs + embedded).
+      for (const guarantor of loan.guarantors || []) {
+        if (!guarantor.isReplaced && ["pending", "waiting_guarantor"].includes(guarantor.status)) {
+          guarantor.status = "expired";
+        }
+      }
+      await LoanRepository.saveLoan(loan, session);
+      await LoanRepository.expirePendingGuarantorRequests(loan._id, session);
+
+      cancelledLoan = loan;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const notifyTargets = (cancelledLoan.guarantors || [])
+    .filter((g) => !g.isReplaced && g.userId)
+    .map((g) => g.userId);
+
+  await Promise.all(
+    notifyTargets.map((guarantorId) =>
+      createNotification({
+        userId: guarantorId,
+        type: "loan",
+        title: "Guarantee Request Withdrawn",
+        message: `${cancelledLoan.loanNumber} was withdrawn by the applicant. Your guarantee request is closed — no action is needed.`,
+        data: { loanId: cancelledLoan._id, loanNumber: cancelledLoan.loanNumber, status: "withdrawn" },
+      })
+    )
+  );
+
+  await logAudit({
+    userId,
+    action: "loan_withdraw",
+    targetType: "loan",
+    targetId: cancelledLoan._id,
+    details: {
+      loanNumber: cancelledLoan.loanNumber,
+      principalAmount: cancelledLoan.principalAmount,
+      reason: cancelledLoan.rejectionReason,
+    },
+  });
+
+  return cancelledLoan;
+};
+
 const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarantorReferralCode, reason }) => {
   const loan = await LoanRepository.findById(loanId);
   if (!loan) throw new AppError("Loan not found.", 404);
@@ -436,7 +512,7 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
     throw new AppError(`${newGuarantorUser.fullName} has not maintained consistent monthly savings.`, 400);
   }
 
-  const activeStatuses = ["waiting_guarantor", "pending_review", "active", "warning_30_days", "defaulted_60_days"];
+  const activeStatuses = ["waiting_guarantor", "pending_review", "active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"];
   const activeGuarantee = await LoanRepository.findActiveGuaranteeForGuarantor(newGuarantorUser._id, activeStatuses);
   if (activeGuarantee) {
     throw new AppError(`${newGuarantorUser.fullName} is already serving as an active guarantor on another loan.`, 400);
@@ -1025,6 +1101,7 @@ const LoanService = {
   getSchedule,
   getHistory,
   applyForLoan,
+  cancelApplication,
   replaceGuarantor,
   approveAndDisburseLoan,
   initializeLoanRepayment,

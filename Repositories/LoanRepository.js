@@ -117,6 +117,17 @@ const LoanRepository = {
     return guarantor.save();
   },
 
+  // Close standalone guarantor requests that are still pending on a loan that
+  // has just been withdrawn, so they drop off guarantors' pending lists.
+  expirePendingGuarantorRequests: (loanId, session = null) => {
+    const query = Guarantor.updateMany(
+      { loanId, status: "pending", isReplaced: false },
+      { $set: { status: "expired" } }
+    );
+    if (session) query.session(session);
+    return query;
+  },
+
   findSavings: (filter, session = null) => {
     const query = Savings.findOne(filter);
     if (session) query.session(session);

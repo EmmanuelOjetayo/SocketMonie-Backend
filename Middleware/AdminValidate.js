@@ -27,6 +27,11 @@ const systemSettingsSchema = Joi.object({
   }).optional(),
   withdrawalFee: Joi.number().min(0).optional(),
   latePenaltyRate: Joi.number().min(0).optional(),
+  referralReward: Joi.object({
+    referrerAmount: Joi.number().min(0).optional(),
+    referredUserAmount: Joi.number().min(0).optional(),
+    qualificationEvent: Joi.string().valid("membership_fee_paid", "first_deposit", "kyc_approved").optional(),
+  }).optional(),
 });
 
 const validateReason = (req, res, next) => {

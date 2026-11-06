@@ -35,6 +35,12 @@ const AdminRepository = {
     return query;
   },
 
+  findSavingsForUser: (userId, session = null) => {
+    const query = Savings.find({ userId });
+    if (session) query.session(session);
+    return query;
+  },
+
   findLoans: (query, skip, limit) =>
     Loan.find(query).populate("userId", "fullName email phone").sort({ createdAt: -1 }).skip(skip).limit(limit),
 

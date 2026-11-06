@@ -98,10 +98,12 @@ function csrfProtect(req, res, next) {
   const headerToken = req.headers[CSRF_HEADER];
 
   if (!cookieToken || !headerToken || !tokensMatch(cookieToken, headerToken)) {
-    // Bootstrap: no cookie at all yet (first visit after deploy / re-login).
-    // Issue one so the SPA can retry; an attacker cannot use the response,
-    // and a mismatched pair is rejected outright.
-    if (!cookieToken) issueCsrfCookie(res);
+    // Bootstrap/refresh: no cookie at all yet (first visit after deploy /
+    // re-login) OR the client's stored token went stale. Issue a fresh one
+    // so the SPA's single auto-retry succeeds with the new value. An
+    // attacker can never read the JS-readable cookie from a cross-site
+    // context, so re-issuing on misfires is safe.
+    issueCsrfCookie(res);
     return res.status(403).json({
       success: false,
       code: "CSRF_TOKEN_INVALID",

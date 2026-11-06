@@ -5,6 +5,7 @@ const User = require("../Models/UserModel");
 const { createNotification, broadcastNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
+const { ReferralService } = require("./ReferralService");
 const { logAudit } = require("../Utilis/auditLogger");
 const AppError = require("../Utilis/AppError");
 
@@ -129,6 +130,10 @@ const updateKyc = async (userId, status, reason = "", adminUser = {}, clientIp =
     user.kycVerifiedAt = new Date();
     await user.save();
     await updateUserScore(userId, "kyc_approved");
+    // Workflow K: an approved KYC may qualify a pending referral (idempotent).
+    if (user.kycStatus === "approved") {
+      await ReferralService.processQualification(userId, "kyc_approved");
+    }
     await createNotification({
       userId,
       type: "system",
@@ -266,6 +271,13 @@ const updateSystemSettings = async (updates, adminUser = {}, clientIp = "", user
     if (settings.latePenaltyRate !== updates.latePenaltyRate) changedFields.push("Late payment penalty rate");
     settings.latePenaltyRate = updates.latePenaltyRate;
   }
+  if (updates.referralReward) {
+    const current = settings.referralReward || {};
+    if (current.referrerAmount !== updates.referralReward.referrerAmount) changedFields.push("Referral reward (referrer)");
+    if (current.referredUserAmount !== updates.referralReward.referredUserAmount) changedFields.push("Referral reward (referred user)");
+    if (current.qualificationEvent !== updates.referralReward.qualificationEvent) changedFields.push("Referral qualification event");
+    settings.referralReward = { ...current, ...updates.referralReward };
+  }
 
   settings.updatedAt = new Date();
   settings.updatedBy = adminUser?._id;
@@ -344,13 +356,26 @@ const approveWithdrawal = async (withdrawalId, adminUser = {}, clientIp = "", us
       const fee = withdrawal.fee || 0;
       totalDeducted = withdrawal.amount + fee;
 
-      // Ensure user has adequate balance
-      if (user.savingsBalance !== undefined) {
-        user.savingsBalance -= totalDeducted;
-        if (user.savingsBalance < 0) {
-          throw new AppError("Insufficient savings balance.", 400);
+      // Re-verify against the savings ledger INSIDE the transaction: completed
+      // net savings minus OTHER pending/approved withdrawal reservations must
+      // still cover amount + fee. (The former `user.savingsBalance` check was
+      // dead code — UserModel has no such field.)
+      const ledgerRecords = await AdminRepository.findSavingsForUser(withdrawal.userId, session);
+      let availableBalance = 0;
+      for (const record of ledgerRecords) {
+        if (record.status === "completed") {
+          availableBalance +=
+            record.type === "withdrawal" ? -Number(record.amount) : record.type === "deposit" ? Number(record.amount) : 0;
+        } else if (
+          record.type === "withdrawal" &&
+          ["pending_approval", "approved"].includes(record.status) &&
+          String(record._id) !== String(withdrawalId)
+        ) {
+          availableBalance -= Number(record.amount) + Number(record.fee || 0);
         }
-        await AdminRepository.saveDocument(user, session);
+      }
+      if (availableBalance < totalDeducted) {
+        throw new AppError("Insufficient savings balance.", 400);
       }
 
       withdrawal.status = "completed";

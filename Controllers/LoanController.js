@@ -214,3 +214,21 @@ exports.triggerLoanDefaulterCheck = async (req, res, next) => {
 };
 
 exports.processLoanRepayment = processLoanRepayment;
+
+exports.cancelLoan = async (req, res, next) => {
+  try {
+    const loan = await LoanService.cancelApplication({
+      userId: req.user._id,
+      loanId: req.params.loanId,
+      reason: req.body?.reason || "",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Loan application withdrawn successfully.",
+      loan,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

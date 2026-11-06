@@ -19,7 +19,7 @@ const create = async ({ title, amount, category, description, reference, expense
         adminId: createdBy,
         referenceId: expense._id,
         referenceType: "expense",
-      });
+      }, session);
       await FinancialLedgerService.recordEntry({
         entryType: "outflow",
         accountCategory: "operating_expense",
@@ -72,6 +72,16 @@ const reverse = async ({ expenseId, adminId, reason }) => {
         notes: `Reversal of expense ${expense.reference}: ${reason}`,
         session,
       });
+      // Restore the capital pool that was deducted when the expense was
+      // created, inside the same transaction.
+      await CapitalService.addCapital({
+        amount: Number(expense.amount),
+        source: "expense_reversal",
+        description: `Reversal of expense ${expense.reference}: ${reason}`,
+        adminId,
+        referenceId: expense._id,
+        referenceType: "expense",
+      }, session);
     });
   } finally { await session.endSession(); }
   return expense;

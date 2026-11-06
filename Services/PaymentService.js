@@ -7,6 +7,7 @@ const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
+const { ReferralService } = require("./ReferralService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT } = require("../Config/constants");
 
@@ -84,12 +85,16 @@ const verifyDeposit = async (userId, ref, transactionId) => {
   if (!existingSavings) {
     throw new AppError("Deposit not found", 404);
   }
-  if (existingSavings.status === "completed") {
-    return { alreadyVerified: true };
-  }
-  // Ownership: the pending deposit must belong to the caller.
+  // Ownership comes BEFORE the completed-state fast path so a caller can never
+  // probe another member's transaction reference (403 vs 404/already-settled).
   if (String(existingSavings.userId) !== String(userId)) {
     throw new AppError("This transaction does not belong to your account.", 403);
+  }
+  if (existingSavings.status === "completed") {
+    // Replay of an already-settled deposit: re-run the idempotent referral
+    // qualification so a transient failure from the first pass self-heals.
+    await ReferralService.processQualification(existingSavings.userId, "first_deposit");
+    return { alreadyVerified: true };
   }
   // Amount: Flutterwave amount (major units) must cover the expected amount.
   const paidAmount = Number(data.charged_amount ?? data.amount ?? 0);
@@ -136,6 +141,9 @@ const verifyDeposit = async (userId, ref, transactionId) => {
   }
 
   await updateUserScore(savings.userId, "deposit");
+
+  // Workflow K: may qualify a pending referral (idempotent).
+  await ReferralService.processQualification(savings.userId, "first_deposit");
 
   await createNotification({
     userId: savings.userId,
@@ -267,6 +275,17 @@ const handleDepositWebhook = async (data) => {
   {
     const finalAmount = finalSettled || savings.amount;
     await updateUserScore(savings.userId, "deposit");
+    // Workflow K: may qualify a pending referral (idempotent). A failure here
+    // must not fail the already-settled deposit and cannot be recovered by a
+    // webhook replay, so it is logged loudly instead of thrown.
+    try {
+      await ReferralService.processQualification(savings.userId, "first_deposit");
+    } catch (referralErr) {
+      console.error(
+        `Referral qualification failed for deposit ${reference} (recovery: member re-verify or support):`,
+        referralErr?.message || referralErr
+      );
+    }
     await createNotification({
       userId: savings.userId,
       type: "savings",
@@ -533,6 +552,18 @@ const handleMembershipFeeWebhook = async (data) => {
     targetId: user._id,
     details: { reference, transactionId, amount },
   });
+
+  // Workflow K: a paid membership fee may qualify a pending referral
+  // (idempotent). A failure cannot block the settled fee and cannot be
+  // recovered by a webhook replay, so it is logged loudly instead of thrown.
+  try {
+    await ReferralService.processQualification(user._id, "membership_fee_paid");
+  } catch (referralErr) {
+    console.error(
+      `Referral qualification failed for membership fee ${reference} (recovery: member re-verify endpoint):`,
+      referralErr?.message || referralErr
+    );
+  }
 };
 
 const handleMinuteWebhook = async (data) => {
@@ -562,11 +593,13 @@ const handleMinuteWebhook = async (data) => {
   }
 
   // Re-verify before fulfilling minutes obligations.
+  let verifiedData = null;
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
     if (String(v.status || "").toLowerCase() !== "successful") return;
     if (String(v.tx_ref || "") !== String(reference)) return;
+    verifiedData = v;
   } catch (e) {
     return;
   }
@@ -598,7 +631,7 @@ const handleMinuteWebhook = async (data) => {
       if (!currentOutstanding.length) return;
 
       const budget = Number(pendingPayment.amount || 0);
-      const paid = Number(v.amount_settled ?? v.amount ?? amount);
+      const paid = Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount);
 
       // Underpayment: settle nothing. The record stays pending for the
       // reconciliation cron or a manual review — never a partial free settlement.

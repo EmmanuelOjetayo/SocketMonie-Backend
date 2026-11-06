@@ -43,10 +43,11 @@ const getMonthlyReport = async (req, res, next) => {
 
     const growthRate = calculateGrowthRate(currentTotalSaved, prevTotalSaved);
 
-    // 4. Fetch Real Outstanding Loans
+    // 4. Fetch Real Outstanding Loans (all undisbursed-complete statuses —
+    // "defaulted" is not a valid LoanModel status; use the real escalation chain).
     const activeLoans = await Loan.find({
       userId,
-      status: { $in: ["active", "defaulted"] },
+      status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
     });
     const outstandingLoanBalance = activeLoans.reduce(
       (sum, loan) => sum + (loan.remainingBalance || 0),
@@ -66,8 +67,8 @@ const getMonthlyReport = async (req, res, next) => {
           activeLoansCount: activeLoans.length,
         },
         rating: {
-          current: req.user.socketScore || 75,
-          tier: req.user.tier || "Tier 1",
+          current: req.user.socketScore ?? 0,
+          tier: req.user.tier || "Unassigned",
         },
       },
     });
@@ -110,17 +111,17 @@ const downloadPdfStatement = async (req, res, next) => {
     const prevTotal = prevSavings.reduce((acc, curr) => acc + curr.amount, 0);
     const growthRate = calculateGrowthRate(totalSaved, prevTotal);
 
-    // 2. Fetch Real Outstanding Loan Balance
+    // 2. Fetch Real Outstanding Loan Balance (valid escalation statuses only)
     const activeLoans = await Loan.find({
       userId: user._id,
-      status: { $in: ["active", "defaulted"] },
+      status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
     });
     const outstandingLoan = activeLoans.reduce(
       (sum, loan) => sum + (loan.remainingBalance || 0),
       0
     );
 
-    const currentScore = user.socketScore || 75;
+    const currentScore = user.socketScore ?? 0;
 
     // 3. Response Headers
     res.setHeader("Content-Type", "application/pdf");
@@ -209,7 +210,7 @@ const downloadPdfStatement = async (req, res, next) => {
       .text(`${currentScore}/100`)
       .fillColor(mutedText)
       .fontSize(9)
-      .text(`Tier: ${user.tier || "Tier 1"} | Evaluated dynamically based on savings and repayment discipline.`, 52, 276);
+      .text(`Tier: ${user.tier || "Unassigned"} | Evaluated dynamically based on savings and repayment discipline.`, 52, 276);
 
     // --- TRANSACTION HISTORY TABLE ---
     doc

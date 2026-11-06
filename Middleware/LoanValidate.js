@@ -74,11 +74,25 @@ const validateRepayVerify = (req, res, next) => {
   next();
 };
 
+const cancelLoanSchema = Joi.object({
+  reason: Joi.string().trim().allow("").max(500).optional(),
+});
+
+const validateCancelLoan = (req, res, next) => {
+  const { error, value } = cancelLoanSchema.validate(req.body || {}, { abortEarly: false, stripUnknown: true });
+  if (error) {
+    throw new AppError(formatValidationError(error), 400);
+  }
+  req.body = value;
+  next();
+};
+
 const LoanValidate = {
   validateApplyLoan,
   validateReplaceGuarantor,
   validateRepayInitialize,
   validateRepayVerify,
+  validateCancelLoan,
 };
 
 module.exports = LoanValidate;

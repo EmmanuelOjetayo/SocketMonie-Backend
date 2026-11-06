@@ -122,6 +122,7 @@ const LoanSchema = new mongoose.Schema(
         "pending_review",
         "active",
         "rejected",
+        "withdrawn",
         "completed",
         "warning_30_days",
         "defaulted_60_days",
