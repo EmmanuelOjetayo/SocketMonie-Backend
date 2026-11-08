@@ -63,14 +63,20 @@ const isTrustedOrigin = (origin) => {
 /**
  * Issue a fresh CSRF token (double-submit bootstrap).
  * Non-httpOnly so the SPA can mirror it into the X-CSRF-Token header.
+ * Returns the token value so controllers/middleware can also expose it
+ * in the JSON body — critical for cross-origin deployments (Netlify →
+ * Render) where `document.cookie` on the frontend origin can never read
+ * a cookie scoped to the backend origin.
  */
 const issueCsrfCookie = (res) => {
-  res.cookie(CSRF_COOKIE, newToken(), {
+  const token = newToken();
+  res.cookie(CSRF_COOKIE, token, {
     httpOnly: false,
     sameSite: isProduction ? "none" : "lax",
     secure: isProduction,
     maxAge: 24 * 60 * 60 * 1000, // 24h, refreshed on login/verify/misfires
   });
+  return token;
 };
 
 function csrfProtect(req, res, next) {
@@ -103,11 +109,18 @@ function csrfProtect(req, res, next) {
     // so the SPA's single auto-retry succeeds with the new value. An
     // attacker can never read the JS-readable cookie from a cross-site
     // context, so re-issuing on misfires is safe.
-    issueCsrfCookie(res);
+    //
+    // The token is ALSO returned in the JSON body: on cross-origin
+    // deployments (Netlify -> Render) the frontend page runs on a
+    // different site than the API, so `document.cookie` there can NEVER
+    // read the backend-scoped csrfToken cookie. The body echo is the
+    // only reliable channel for the retry to pick up the fresh value.
+    const freshToken = issueCsrfCookie(res);
     return res.status(403).json({
       success: false,
       code: "CSRF_TOKEN_INVALID",
       message: "Security token expired or missing. Please retry the action.",
+      csrfToken: freshToken,
     });
   }
 

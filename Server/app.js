@@ -145,6 +145,21 @@ app.use(
 app.use(cookieParser());
 
 // ==========================================================================
+// 7. REQUEST LOGGING (Morgan "dev") — logs method, URL, HTTP status and
+// response time on every request (dev format gives colour-coding: green 2xx,
+// yellow 4xx, red 5xx+). Morgan never includes request bodies, cookies or
+// auth headers, so OTPs/passwords/tokens cannot leak through it.
+// Health check + root ping are skipped to avoid log noise. The global error
+// handler below still logs every 4xx/5xx error message in full.
+// ==========================================================================
+const morgan = require("morgan");
+app.use(
+  morgan("dev", {
+    skip: (req) => req.path === "/api/health" || req.path === "/",
+  })
+);
+
+// ==========================================================================
 // 7. OTHER SECURITY MIDDLEWARE
 // ==========================================================================
 
@@ -242,10 +257,22 @@ app.get("/api/health", (req, res) => {
     console.error("❌ CRITICAL: FLW_SECRET_HASH is not configured. Webhook signature verification will be disabled. Set FLW_SECRET_HASH or FLW_WEBHOOK_SECRET in .env");
     process.exit(1);
   }
+  // Report only the Flutterwave credential MODE (test/live), never values.
+  // A public/secret mode mismatch silently degrades Inline checkout to the
+  // sandbox mock flow (MockFLWRef) — surface it here so deploys are provable.
+  const pub = String(process.env.FLW_PUBLIC_KEY || process.env.FLWPUBK || "");
+  const sec = String(process.env.FLW_SECRET_KEY || process.env.FLWSECK || "");
+  const pubTest = /_TEST/i.test(pub);
+  const secTest = /_TEST/i.test(sec);
   res.status(200).json({
     success: true,
     message: "API is healthy",
     flwSecretHashConfigured,
+    flutterwave: {
+      publicKeyMode: pubTest ? "test" : pub ? "live" : "missing",
+      secretKeyMode: secTest ? "test" : sec ? "live" : "missing",
+      keysConsistent: (pubTest && secTest) || (!pubTest && !secTest),
+    },
   });
 });
 

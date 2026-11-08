@@ -1,9 +1,10 @@
 const mongoose = require("mongoose");
 
-const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
+const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID, FLW_SECRET_KEY } = require("../Utilis/Flutterwave");
 const User = require("../Models/UserModel");
 const Minutes = require("../Models/MinutesModel");
 const Savings = require("../Models/SavingsModel");
+const crypto = require("crypto");
 
 const { logAudit } = require("../Utilis/auditLogger");
 const {
@@ -12,6 +13,33 @@ const {
 const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 
 const MONTHLY_MINUTES_AMOUNT = 500;
+
+// Server-side diagnostic for the production-only checkout failure class
+// ("key customer.id must not contain '.'" from Flutterwave's telemetry).
+// We cannot read FLW account telemetry from this app, but we CAN verify the
+// credential *mode* the deployed backend is running with: test vs live.
+// A live public key paired with a test secret key (or vice versa) makes
+// Flutterwave Inline fall back to the sandbox mock transaction flow, which is
+// exactly when `MockFLWRef` values appear in the redirect payload.
+const FLW_MODE = (() => {
+  const pub = String(FLW_PUBLIC_KEY || "");
+  const sec = String(FLW_SECRET_KEY || "");
+  const pubTest = /_TEST/i.test(pub);
+  const secTest = /_TEST/i.test(sec);
+  return {
+    publicKeyMode: pubTest ? "test" : pub ? "live" : "missing",
+    secretKeyMode: secTest ? "test" : sec ? "live" : "missing",
+    consistent: (pubTest && secTest) || (!pubTest && !secTest),
+  };
+})();
+
+if (!FLW_MODE.consistent) {
+  // Loud, actionable and secret-free: never log key values, only their mode.
+  console.error(
+    `❌ Flutterwave key mode mismatch: publicKey=${FLW_MODE.publicKeyMode}, secretKey=${FLW_MODE.secretKeyMode}. ` +
+      `Checkout will produce mock references (MockFLWRef) until both keys come from the same Flutterwave environment.`
+  );
+}
 
 /**
  * ---------------------------------------------------------
@@ -23,9 +51,7 @@ const MONTHLY_MINUTES_AMOUNT = 500;
  * Generate a unique internal reference.
  */
 function generateReference(userId) {
-  return `MIN_${Date.now()}_${Math.random()
-    .toString(36)
-    .substring(2, 8)}_${userId
+  return `MIN_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
     .toString()
     .slice(-6)}`;
 }
@@ -458,6 +484,10 @@ exports.initializeMinutes = async (
           name: user.fullName,
           phone_number: user.phone || "",
         },
+
+        // Explicitly pin the checkout host + client-side credential mode so
+        // the browser SDK can never drift to a different environment.
+        checkout_url: "https://checkout.flutterwave.com/v3/hosted/pay",
 
         customizations: {
           title: "SocketMonnie",

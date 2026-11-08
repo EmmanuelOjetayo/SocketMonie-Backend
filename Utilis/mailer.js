@@ -28,8 +28,20 @@ function getClient() {
  */
 async function sendEmail({ to, subject, html }) {
   if (!apiKey) {
-    console.error("❌ BREVO_API_KEY not set — email skipped.");
+    // This is THE root cause for "registered but no OTP email" when the key
+    // is missing on a freshly deployed environment. Never log the key value.
+    console.error(
+      "❌ [email] BREVO_API_KEY not set — email delivery skipped entirely. " +
+        "Set the xkeysib-... key from Brevo dashboard → SMTP & API → API keys."
+    );
     return { success: false, error: "BREVO_API_KEY not configured" };
+  }
+  if (!senderEmail) {
+    console.error(
+      "❌ [email] No sender configured — set BREVO_SENDER (verified sender email) or EMAIL_USER. " +
+        "Brevo rejects sends with an undefined sender."
+    );
+    return { success: false, error: "Email sender not configured (BREVO_SENDER/EMAIL_USER missing)" };
   }
 
   try {
@@ -41,10 +53,13 @@ async function sendEmail({ to, subject, html }) {
     });
 
     const messageId = result?.messageId || result?.body?.messageId || "ok";
-    console.log("✅ Brevo email sent:", messageId);
+    console.log(`[email] ✅ Brevo accepted send (messageId=${messageId})`);
     return { success: true, messageId };
   } catch (error) {
-    console.error("❌ Brevo email failed:", error.message || error);
+    console.error(
+      `[email] ❌ Brevo send threw: ${error.message || error}` +
+        (error.status ? ` (HTTP ${error.status})` : "")
+    );
     return { success: false, error: error.message || String(error) };
   }
 }

@@ -107,7 +107,12 @@ const initializePayment = async ({ email, phone_number = "", name = "", amount, 
     amount: Number(amount),
     currency,
     redirect_url,
-    customer: { email, phonenumber: phone_number, phone_number, name },
+    // Flutterwave Standard endpoint expects the documented `phonenumber` key.
+    // Sending BOTH `phonenumber` and `phone_number` (the previous duplicate)
+    // is rejected by the API's strict validator as a malformed customer
+    // object, and Flutterwave's telemetry endpoint surfaces that as
+    // `key customer.id must not contain '.'`.
+    customer: { email, phonenumber: phone_number, name },
     customizations: { title, description },
     meta,
   });

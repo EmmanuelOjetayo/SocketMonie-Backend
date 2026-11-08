@@ -10,6 +10,15 @@ const verifyOtpTemplate = require("../Utilis/emailTemplates/verifyOtp");
 const forgotPasswordTemplate = require("../Utilis/emailTemplates/forgotPassword");
 
 const AppError = require("../Utilis/AppError")
+
+/**
+ * Mask an email for logs: "praisee827@gmail.com" -> "pr********@gmail.com".
+ * Keeps recipient identifiable for support correlation without exposing PII
+ * in full. Credential fields (OTP, password, API keys) are NEVER logged.
+ */
+const maskEmail = (email) =>
+  String(email || "").replace(/^([^@]{1,2})[^@]*(@.*)$/, "$1********$2");
+
 // Helper function to generate unique referral code for new member
 const generateUniqueReferralCode = () => {
   return "SM-" + crypto.randomBytes(3).toString("hex").toUpperCase();
@@ -91,15 +100,33 @@ const RegisterService = async(userData)=>{
         
     
         // 5. Send Verification Email
+        // Breadcrumbs identify exactly why OTP delivery fails while registration
+        // + DB storage succeed. NEVER log the OTP itself, the password, or any
+        // credential — only presence, recipient (masked), and vendor errors.
+        console.log(
+          `[auth][register] user stored (id=${newUser._id}, status=pending), OTP generated+hashed, attempting verification email...`
+        );
+
         const emailResult = await sendEmail({
           to: newUser.email,
           subject: "Verify Your Socket Moni Account",
           html: verifyOtpTemplate(newUser.fullName, otp),
         });
-    
+
         if (!emailResult.success) {
-          throw new AppError("Account created but verification email could not be sent.", 502);
+          // Surface the ROOT CAUSE (e.g. "BREVO_API_KEY not configured", Brevo
+          // auth/sender errors) — previously discarded, making the production
+          // "registered but no OTP email" failure undiagnosable from logs.
+          console.error(
+            `[auth][register] ❌ OTP email delivery FAILED for user id=${newUser._id}: ${emailResult.error || "unknown vendor error"}`
+          );
+          const cause = emailResult.error ? ` (cause: ${emailResult.error})` : "";
+          throw new AppError(`Account created but verification email could not be sent.${cause}`, 502);
         }
+
+        console.log(
+          `[auth][register] ✅ OTP email delivered to ${maskEmail(newUser.email)} (messageId=${emailResult.messageId || "ok"})`
+        );
 
         const responseData = { 
                 userId: newUser._id, 
