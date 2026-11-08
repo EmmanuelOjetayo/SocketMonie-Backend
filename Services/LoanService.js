@@ -977,7 +977,9 @@ const initializeLoanRepayment = async ({ userId, userEmail, userName, userPhone,
   const amount = Math.round(Number(paymentAmount));
   if (isNaN(amount) || amount <= 0) throw new AppError("Invalid repayment amount.", 400);
 
-  const tx_ref = `LRP_${Date.now()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+  // Standardized reference shape (fix 2): `LRP-<userId>-<timestamp>`,
+  // same proven pattern as Minutes/Deposit references.
+  const tx_ref = `LRP-${userId.toString()}-${Date.now()}`;
 
   await LoanRepository.createSavingsRecord({
     userId,
@@ -1000,7 +1002,9 @@ const initializeLoanRepayment = async ({ userId, userEmail, userName, userPhone,
     customer: {
       email: userEmail,
       name: userName,
-      phone_number: userPhone || "",
+      // Working-project fallback (fix 1): never an empty phone —
+      // Flutterwave telemetry 400s on empty customer fields.
+      phone_number: userPhone || "08000000000",
     },
     customizations: {
       title: "SocketMonnie Loan Repayment",
@@ -1046,7 +1050,13 @@ const verifyLoanRepayment = async ({ userId, loanId, reference, tx_ref, transact
   }
 
   const paymentReference = (payment.tx_ref || payment.reference || "").trim();
-  if (!paymentReference || !["LRP_", "RPL_"].some((prefix) => paymentReference.startsWith(prefix))) {
+  // Accept both generations: legacy `LRP_`/`RPL_` (underscore) and the
+  // standardized `LRP-<userId>-<timestamp>` (hyphen) from fix 2. Without
+  // the hyphen family, every NEW repayment checkout would fail here.
+  if (
+    !paymentReference ||
+    !["LRP_", "RPL_", "LRP-"].some((prefix) => paymentReference.startsWith(prefix))
+  ) {
     throw new AppError("Invalid loan repayment reference.", 400);
   }
 

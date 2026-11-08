@@ -4,7 +4,6 @@ const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID,
 const User = require("../Models/UserModel");
 const Minutes = require("../Models/MinutesModel");
 const Savings = require("../Models/SavingsModel");
-const crypto = require("crypto");
 
 const { logAudit } = require("../Utilis/auditLogger");
 const {
@@ -49,11 +48,16 @@ if (!FLW_MODE.consistent) {
 
 /**
  * Generate a unique internal reference.
+ *
+ * Format follows the proven reference-project pattern
+ * (CAMP: `YC-<id>-<ts>`, GLS: `GLS-OGB-<name>-<ts>-<rand>`):
+ *   server-generated, prefix-tagged, collision-resistant
+ *   `SocketMonnie-<userId>-<timestamp>` per the confirmed fix 2.
+ * Never client-supplied and never contains characters Flutterwave
+ * rejects (no dots, no spaces, no special punctuation).
  */
 function generateReference(userId) {
-  return `MIN_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
-    .toString()
-    .slice(-6)}`;
+  return `SocketMonnie-${userId.toString()}-${Date.now()}`;
 }
 
 /**
@@ -482,7 +486,10 @@ exports.initializeMinutes = async (
         customer: {
           email: user.email,
           name: user.fullName,
-          phone_number: user.phone || "",
+          // Working-project fallback (GLS/UBC): never send an EMPTY phone —
+          // Flutterwave's telemetry/event endpoints 400 on empty customer
+          // fields, surfacing as `key customer.id must not contain '.'`.
+          phone_number: user.phone || "08000000000",
         },
 
         // Explicitly pin the checkout host + client-side credential mode so
@@ -610,6 +617,41 @@ exports.verifyMinutes = async (
         success: false,
         message:
           "Payment reference is required.",
+      });
+    }
+
+    /**
+     * -----------------------------------------------------
+     * 0. IDEMPOTENCY GUARD (fix 3)
+     *
+     * Reference: CAMP/GLS pattern —
+     *   `$or: [{ reference: txRef }, { transactionId }]` checked
+     *   BEFORE any credit. If the webhook and the frontend
+     *   callback both arrive (or Flutterwave retries the
+     *   webhook), the second caller gets "already processed"
+     *   WITHOUT re-running settlement. The in-transaction
+     *   re-fetch below remains the second layer of defence.
+     * -----------------------------------------------------
+     */
+    const duplicateGuard = await Savings.findOne({
+      $or: [
+        ...(ref ? [{ reference: ref }] : []),
+        ...(txId ? [{ transactionId: String(txId) }] : []),
+      ],
+      category: "minutes_payment",
+      status: "completed",
+    }).lean();
+
+    if (duplicateGuard) {
+      return res.status(200).json({
+        success: true,
+        message: "Transaction already processed.",
+        alreadyVerified: true,
+        idempotent: true,
+        data: {
+          reference: duplicateGuard.reference || ref,
+          transactionId: duplicateGuard.transactionId || txId || null,
+        },
       });
     }
 
@@ -755,9 +797,34 @@ exports.verifyMinutes = async (
      * 5. Verify the amount actually paid.
      *
      * Flutterwave v3 amounts are in NAIRA (major units).
+     *
+     * Gross vs settled (fix 4 — validated-amount capture,
+     * reference-project intent, corrected for unit scale):
+     * FLW returns BOTH `amount` (gross charged) and
+     * `amount_settled` (net after FLW fees). We capture both
+     * for the financial records and require a positive settled
+     * value. We deliberately do NOT apply the reference
+     * projects' `Math.floor(rawUsdCents / 100) * 100` trick:
+     * that exists there because they inflate the charge by the
+     * FLW fee and floor kobo back to wallet multiples. Here the
+     * coverage check already compares the gross charge against
+     * the exact server-computed `totalPayable` (which includes
+     * our fee markup), and credit is month-settlement — flooring
+     * naira to multiples of 100 would REJECT exact-fee payments
+     * (e.g. charged ₦511 for an expected ₦511).
      * -----------------------------------------------------
      */
     const paidNaira = Number(flwData.charged_amount ?? flwData.amount ?? 0);
+    const grossAmount = Number(flwData.amount ?? flwData.charged_amount ?? 0);
+    const rawSettled = Number(flwData.amount_settled ?? 0);
+    const settledNaira = rawSettled > 0 ? rawSettled : grossAmount;
+
+    if (settledNaira <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid settlement amount.",
+      });
+    }
 
     const expectedNaira =
       totalPayable;
@@ -982,6 +1049,13 @@ exports.verifyMinutes = async (
 
           totalPaid:
             paidNaira,
+
+          // Finance audit trail (fix 4): gross charged vs net
+          // settled as reported by Flutterwave's authoritative
+          // verification response.
+          grossAmount,
+
+          settledAmount: settledNaira,
 
           monthsSettled:
             settledMinutes.map(

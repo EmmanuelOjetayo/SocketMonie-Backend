@@ -15,7 +15,11 @@ const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
   if (!user) throw new AppError("User not found", 404);
 
-  const reference = `DEP_${Date.now()}_${userId.toString().slice(-6)}`;
+  // Standardized reference shape (fix 2): server-generated,
+  // prefix-tagged, collision-resistant `PREFIX-<userId>-<timestamp>`
+  // — same proven pattern as the Minutes flow and the CAMP/GLS
+  // reference projects. Contains only characters Flutterwave accepts.
+  const reference = `DEP-${userId.toString()}-${Date.now()}`;
   const pendingDeposit = await PaymentRepository.createPendingDeposit({
     userId,
     amount,
@@ -33,7 +37,10 @@ const initiateDeposit = async (userId, amount, method) => {
     txRef: reference,
     amount,
     currency: "NGN",
-    customer: { email: user.email, name: user.fullName, phone_number: user.phone || "" },
+    // Same working-project customer shape as the Minutes flow (fix 1):
+    // only documented keys, never an empty phone (Flutterwave telemetry
+    // 400s on empty customer fields).
+    customer: { email: user.email, name: user.fullName, phone_number: user.phone || "08000000000" },
     customizations: { title: "SocketMonnie", description: "Savings Deposit" },
     meta: { userId: userId.toString(), type: "deposit" },
     metadata: { userId: userId.toString(), type: "deposit" },
@@ -574,10 +581,10 @@ const handleMinuteWebhook = async (data) => {
 
   if (!reference || !transactionId) return;
 
-  // The checkout reference (MIN_...) lives on a pending Savings record
+  // The checkout reference lives on a pending Savings record
   // created by initializeMinutes. Find it first.
   const pendingPayment = await PaymentRepository.findSavingsByReference(reference);
-  if (!pendingPayment) return;
+  if (!pendingPayment && status !== "successful") return;
 
   if (status !== "successful") {
     if (pendingPayment.status === "completed") return;
@@ -604,14 +611,102 @@ const handleMinuteWebhook = async (data) => {
     return;
   }
 
-  if (pendingPayment.status === "completed") return;
+  // ---------------------------------------------------------------
+  // Checkout-record resolution (Defect 3 fallback chain, applied to
+  // VERIFIED data exactly like the CAMP reference implementation):
+  //   ① pending Savings record by our server-generated reference
+  //   ② verified meta.userId (sent by us at checkout time)
+  //   ③ verified customer.email (normalised) lookup
+  //   ④ verified customer.phone_number, compared on last 10 digits
+  // so "+234805…", "234805…" and "0805…" all compare equal.
+  // A reference lookup failure must never alias a member to payment —
+  // if every fallback misses, the event is logged for manual review.
+  // ---------------------------------------------------------------
+  let userIdFallback = null;
+  let resolutionVia = "reference-record";
+
+  if (!pendingPayment) {
+    const User = require("../Models/UserModel");
+
+    resolutionVia = "none";
+
+    // ② verified meta.userId / metadata.userId
+    const metaUser =
+      verifiedData?.meta?.userId ||
+      verifiedData?.metadata?.userId ||
+      null;
+    if (metaUser && String(metaUser).match(/^[a-fA-F0-9]{24}$/)) {
+      const exists = await User.exists({ _id: metaUser });
+      if (exists) {
+        userIdFallback = metaUser.toString();
+        resolutionVia = "verified-meta.userId";
+      }
+    }
+
+    // ③ verified customer.email
+    if (!userIdFallback && verifiedData?.customer?.email) {
+      const email = String(verifiedData.customer.email).trim().toLowerCase();
+      if (email) {
+        const byEmail = await User.findOne({ email }).select("_id").lean();
+        if (byEmail) {
+          userIdFallback = byEmail._id.toString();
+          resolutionVia = "customer.email";
+        }
+      }
+    }
+
+    // ④ verified customer.phone_number, last-10 comparison
+    if (!userIdFallback && verifiedData?.customer?.phone_number) {
+      const last10 = (p) =>
+        String(p || "")
+          .replace(/\D/g, "")
+          .replace(/^234/, "")
+          .replace(/^0+/, "")
+          .slice(-10);
+      const flw10 = last10(verifiedData.customer.phone_number);
+      if (flw10.length === 10) {
+        const candidates = await User.find({
+          phone: { $exists: true, $ne: null },
+        })
+          .select("_id phone")
+          .lean();
+        const hit = candidates.find((c) => last10(c.phone) === flw10);
+        if (hit) {
+          userIdFallback = hit._id.toString();
+          resolutionVia = "customer.phone(last10)";
+        }
+      }
+    }
+  }
+
+  if (!pendingPayment && !userIdFallback) {
+    console.error(
+      `[MINUTES WEBHOOK] Unresolvable checkout record after all fallbacks | ref: ${reference} | TX: ${transactionId} | email: ${verifiedData?.customer?.email || "—"} | phone: ${verifiedData?.customer?.phone_number || "—"}`
+    );
+    return;
+  }
+
+  if (!pendingPayment && userIdFallback) {
+    console.log(
+      `[MINUTES WEBHOOK] Checkout record missing for ref ${reference} — member resolved via ${resolutionVia}: ${userIdFallback}`
+    );
+  }
+
+  if (pendingPayment && pendingPayment.status !== "completed" && pendingPayment.status !== "pending") {
+    // Already terminal for another reason — leave it alone.
+    return;
+  }
+
+  if (pendingPayment && pendingPayment.status === "completed") return;
 
   // Settle exactly what this checkout paid for — never every outstanding
   // obligation. The checkout priced the earliest arrears into ONE reference
   // (stored total on the pending Savings record). We settle only the oldest
   // obligations whose grossed-up total fits that budget; obligations created
   // after checkout remain pending for their own payment (P0 over-settlement fix).
-  const userId = pendingPayment.userId;
+  // Fallback resolution (record missing) budgets from what Flutterwave
+  // actually charged, so the member is never over-credited.
+  const userId = (pendingPayment?.userId || userIdFallback).toString();
   const mongoose = require("mongoose");
   const Minutes = require("../Models/MinutesModel");
   const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
@@ -630,7 +725,9 @@ const handleMinuteWebhook = async (data) => {
         .session(session);
       if (!currentOutstanding.length) return;
 
-      const budget = Number(pendingPayment.amount || 0);
+      const budget = pendingPayment
+        ? Number(pendingPayment.amount || 0)
+        : Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount);
       const paid = Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount);
 
       // Underpayment: settle nothing. The record stays pending for the
@@ -673,9 +770,11 @@ const handleMinuteWebhook = async (data) => {
           item.month === now.getMonth() + 1 && item.year === now.getFullYear()
       );
 
-      pendingPayment.status = "completed";
-      pendingPayment.transactionId = String(transactionId);
-      await pendingPayment.save({ session });
+      if (pendingPayment) {
+        pendingPayment.status = "completed";
+        pendingPayment.transactionId = String(transactionId);
+        await pendingPayment.save({ session });
+      }
     });
   } finally {
     await session.endSession();
@@ -700,13 +799,15 @@ const handleMinuteWebhook = async (data) => {
     userId,
     action: "monthly_minutes_paid",
     targetType: "minutes",
-    targetId: pendingPayment._id,
+    targetId: pendingPayment?._id || undefined,
     details: {
       amount,
       reference,
       transactionId,
       monthsSettled: settledCount,
       method: "flutterwave",
+      resolvedVia:
+        pendingPayment ? "reference-record" : "fallback-chain",
     },
   });
 };

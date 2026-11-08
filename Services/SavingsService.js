@@ -309,7 +309,10 @@ const initializeMembershipFee = async (userId) => {
     throw new AppError("Membership fee has already been paid for this account.", 400);
   }
 
-  const tx_ref = `MEM_${Date.now()}_${user._id}`;
+  // Standardized reference shape (fix 2): `MEM-<userId>-<timestamp>`.
+  // The old `MEM_<ts>_<id>` format is what appeared in the production
+  // checkout console (`txRef: "MEM_1794144270031_6af060106ecfaeef74e2b088"`).
+  const tx_ref = `MEM-${user._id.toString()}-${Date.now()}`;
   user.membershipFeeTxRef = tx_ref;
   await user.save();
 
@@ -321,10 +324,14 @@ const initializeMembershipFee = async (userId) => {
     txRef: tx_ref,
     amount: MEMBERSHIP_FEE_AMOUNT,
     currency: "NGN",
+    // Working-project customer shape (fix 1): only documented keys and
+    // never an EMPTY phone — Flutterwave's telemetry/event endpoints 400
+    // on empty customer fields (`key customer.id must not contain '.`
+    // surfaced from exactly this checkout).
     customer: {
       email: user.email,
       name: user.fullName,
-      phone_number: user.phone || "",
+      phone_number: user.phone || "08000000000",
     },
     customizations: {
       title: "SocketMonnie Membership Fee",
