@@ -1,5 +1,5 @@
 const express = require("express");
-const { upload, kycFileFilter } = require("../Config/cloudinary");
+const { upload, kycFileFilter, avatarUpload } = require("../Config/cloudinary");
 const routeProtect = require("../Middleware/AuthMiddleware");
 const {
   GetUserInfo,
@@ -22,7 +22,7 @@ const UserRoutes = express.Router();
 UserRoutes.get('/me', routeProtect, GetUserInfo);
 UserRoutes.patch("/personal-info", routeProtect, UserValidator.UpdatePersonalInfoValidate, UpdatePersonalInfo);
 UserRoutes.post('/kyc', routeProtect, upload.single('file'), UserValidator.KYCUploadValidate, KYCUpload);
-UserRoutes.post('/profile-picture', routeProtect, upload.single('file'), UploadProfilePicture);
+UserRoutes.post('/profile-picture', routeProtect, avatarUpload.single('file'), UploadProfilePicture);
 UserRoutes.post('/pin', routeProtect, UserValidator.SetPinValidate, SetPin);
 UserRoutes.post('/pin/forgot', UserValidator.ForgotPinValidate, forgotPin);
 UserRoutes.post('/pin/reset', routeProtect, UserValidator.ResetPinValidate, resetPin);

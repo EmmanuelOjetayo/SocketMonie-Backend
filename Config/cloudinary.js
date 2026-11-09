@@ -23,6 +23,17 @@ const storage = new CloudinaryStorage({
   },
 });
 
+// Dedicated selfie/profile-picture storage — same engine, separate folder
+// and image-only validation so avatars never mix with KYC documents.
+const avatarStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'socket_moni_selfie',
+    allowed_formats: ['jpg', 'jpeg', 'png'],
+    resource_type: 'image',
+  },
+});
+
 // Defense-in-depth: restrict by MIME type as well as extension (Cloudinary's
 // allowed_formats enforces extensions; this rejects clearly-invalid payloads).
 const allowedMimeTypes = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
@@ -40,4 +51,19 @@ const upload = multer({
   fileFilter: kycFileFilter,
 });
 
-module.exports = { cloudinary, upload, kycFileFilter };
+// Image-only MIME filter for profile pictures (reject PDFs).
+const avatarFileFilter = (req, file, cb) => {
+  const allowed = ["image/jpeg", "image/jpg", "image/png"];
+  if (!allowed.includes(file.mimetype)) {
+    return cb(new Error("Profile picture must be a JPEG, JPG, or PNG image."));
+  }
+  cb(null, true);
+};
+
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: avatarFileFilter,
+});
+
+module.exports = { cloudinary, upload, kycFileFilter, avatarUpload, avatarFileFilter };
