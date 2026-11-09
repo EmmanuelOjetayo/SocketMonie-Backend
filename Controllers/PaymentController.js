@@ -129,8 +129,11 @@ exports.webhook = async (req, res) => {
 };
 
 exports.verifyBankAccount = async (req, res, next) => {
+  let bankCode;
   try {
-    const { accountNumber, bankCode } = req.body;
+    const body = req.body || {};
+    bankCode = body.bankCode;
+    const accountNumber = body.accountNumber;
     console.log(
       `[BANK] verify-bank request received | bankCode: ${bankCode || "—"} | accountNumber: ${accountNumber ? `present(len=${String(accountNumber).length})` : "missing"}`
     );

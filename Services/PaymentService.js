@@ -1172,19 +1172,22 @@ const reconcilePaymentByReference = async (reference) => {
 
 
 const verifyBankAccount = async (accountNumber, bankCode) => {
-  console.log(`[BANK] DIAG: SERVICE entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${accountNumber ? "present" : "missing"}`);
+  console.log(`[BANK] SERVICE entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${accountNumber ? "present" : "missing"}`);
   if (!accountNumber || !bankCode) throw new AppError("Account number and bank code are required.", 400);
   let result;
   try {
     result = await verifyAccount(accountNumber, bankCode);
   } catch (e) {
-    const firstStackLine = String(e?.stack || "").split("\n").slice(0, 4).join(" <- ");
+    const flwMessage = e?.response?.data?.message || e?.message || "Bank verification failed";
     console.log(
-      `[BANK] DIAG: SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | errName: ${e?.name} | errMsg: ${e?.message} | errStatus: ${e?.response?.status || e?.statusCode || "—"} | stack: ${firstStackLine.slice(0, 500)}`
+      `[BANK] SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | errName: ${e?.name} | errMsg: ${flwMessage}`
     );
-    throw e;
+    // Any Flutterwave rejection here is an expected business outcome
+    // (invalid bank code, invalid account, etc.) — surface it as a clean
+    // 400 so the frontend can display the reason, never a 500.
+    throw new AppError(flwMessage, e?.response?.status && Number(e.response.status) < 500 ? Number(e.response.status) : 400);
   }
-  console.log(`[BANK] DIAG: SERVICE ok | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
+  console.log(`[BANK] SERVICE ok | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
   return {
     accountNumber: result.data.account_number,
     accountName: result.data.account_name,
