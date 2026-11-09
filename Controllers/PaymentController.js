@@ -128,25 +128,38 @@ exports.webhook = async (req, res) => {
   }
 };
 
+/**
+ * Mask an account number for logs: first 4 + last 4 visible so the real
+ * input can be confirmed, full number never written to logs.
+ */
+const maskAccount = (num) => {
+  const s = String(num || "");
+  if (s.length <= 8) return `len=${s.length}`;
+  return `${s.slice(0, 4)}****${s.slice(-4)} (len=${s.length})`;
+};
+
 exports.verifyBankAccount = async (req, res, next) => {
   let bankCode;
+  let accountNumber;
   try {
     const body = req.body || {};
     bankCode = body.bankCode;
-    const accountNumber = body.accountNumber;
+    accountNumber = body.accountNumber;
     console.log(
-      `[BANK] verify-bank request received | bankCode: ${bankCode || "—"} | accountNumber: ${accountNumber ? `present(len=${String(accountNumber).length})` : "missing"}`
+      `[BANK] verify-bank request received | bankCode: ${bankCode || "—"} | accountNumber: ${accountNumber ? maskAccount(accountNumber) : "missing"} | rawBody: ${JSON.stringify({ accountNumber: maskAccount(accountNumber), bankCode })}`
     );
     const data = await PaymentService.verifyBankAccount(accountNumber, bankCode);
     console.log(
-      `[BANK] verify-bank responded success | bankCode: ${bankCode} | resolvedAccountName: ${data?.accountName || "—"}`
+      `[BANK] verify-bank responded success | bankCode: ${bankCode} | accountNumber: ${maskAccount(accountNumber)} | resolvedAccountName: ${data?.accountName || "—"}`
     );
     return res.status(200).json({
       success: true,
       data,
     });
   } catch (err) {
-    console.log(`[BANK] verify-bank failed | bankCode: ${bankCode || "—"} | error: ${err?.message || err}`);
+    console.log(
+      `[BANK] verify-bank failed | bankCode: ${bankCode || "—"} | accountNumber: ${accountNumber ? maskAccount(accountNumber) : "missing"} | status: ${err?.statusCode || err?.status || "—"} | error: ${err?.message || err}`
+    );
     next(err);
   }
 };

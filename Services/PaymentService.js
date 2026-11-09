@@ -1171,23 +1171,40 @@ const reconcilePaymentByReference = async (reference) => {
 };
 
 
+/**
+ * Mask an account number for logs: first 4 + last 4 visible so the real
+ * input can be confirmed, full number never written to logs.
+ */
+const maskAccount = (num) => {
+  const s = String(num || "");
+  if (s.length <= 8) return `len=${s.length}`;
+  return `${s.slice(0, 4)}****${s.slice(-4)} (len=${s.length})`;
+};
+
 const verifyBankAccount = async (accountNumber, bankCode) => {
-  console.log(`[BANK] SERVICE entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${accountNumber ? "present" : "missing"}`);
+  console.log(
+    `[BANK] SERVICE entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${accountNumber ? maskAccount(accountNumber) : "missing"}`
+  );
   if (!accountNumber || !bankCode) throw new AppError("Account number and bank code are required.", 400);
   let result;
   try {
     result = await verifyAccount(accountNumber, bankCode);
   } catch (e) {
     const flwMessage = e?.response?.data?.message || e?.message || "Bank verification failed";
+    const flwBody = e?.response?.data
+      ? JSON.stringify(e.response.data).slice(0, 600)
+      : "none";
     console.log(
-      `[BANK] SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | errName: ${e?.name} | errMsg: ${flwMessage}`
+      `[BANK] SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${maskAccount(accountNumber)} | errName: ${e?.name} | errStatus: ${e?.response?.status || e?.statusCode || "—"} | errMsg: ${flwMessage} | flwBody: ${flwBody}`
     );
     // Any Flutterwave rejection here is an expected business outcome
     // (invalid bank code, invalid account, etc.) — surface it as a clean
     // 400 so the frontend can display the reason, never a 500.
     throw new AppError(flwMessage, e?.response?.status && Number(e.response.status) < 500 ? Number(e.response.status) : 400);
   }
-  console.log(`[BANK] SERVICE ok | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
+  console.log(
+    `[BANK] SERVICE ok | bankCode: ${bankCode} | accountNumber: ${maskAccount(accountNumber)} | resolvedAccountName: ${result.data?.account_name || "—"}`
+  );
   return {
     accountNumber: result.data.account_number,
     accountName: result.data.account_name,

@@ -141,34 +141,50 @@ const getBanks = async () => {
   const response = await client.get("/banks/NG");
   const body = response.data;
   const list = Array.isArray(body?.data) ? body.data : [];
-  return { status: "success", data: list.map((b) => ({ name: b.name, code: b.code, id: b.id })) };
+  const mapped = list.map((b) => ({ name: b.name, code: b.code, id: b.id }));
+  console.log(
+    `[BANK] DIAG: FLW /banks/NG OK | http: ${response.status} | total: ${mapped.length} | sample: ${JSON.stringify(mapped.slice(0, 5)).slice(0, 400)}`
+  );
+  return { status: "success", data: mapped };
+};
+
+/**
+ * Mask an account number for logs: first 4 + last 4 visible so the real
+ * input can be confirmed, full number never written to logs.
+ */
+const maskAccount = (num) => {
+  const s = String(num || "");
+  if (s.length <= 8) return `len=${s.length}`;
+  return `${s.slice(0, 4)}****${s.slice(-4)} (len=${s.length})`;
 };
 
 const verifyAccount = async (accountNumber, bankCode) => {
   const bankCodeStr = String(bankCode || "");
+  const acctStr = String(accountNumber || "");
   console.log(
-    `[BANK] DIAG: → FLW /accounts/resolve | bankCode: ${bankCodeStr} | accountNumber: present(len=${String(accountNumber || "").length})`
+    `[BANK] DIAG: → FLW /accounts/resolve | base: ${FLW_BASE_URL} | bankCode: ${bankCodeStr} | accountNumber: ${maskAccount(acctStr)} | request: ${JSON.stringify({ account_number: maskAccount(acctStr), account_bank: bankCodeStr })} | keyMode: ${FLW_SECRET_KEY ? (/_TEST/i.test(FLW_SECRET_KEY) ? "test" : "live") : "missing"}`
   );
   let response;
   try {
     response = await client.post("/accounts/resolve", {
-      account_number: accountNumber,
+      account_number: acctStr,
       account_bank: bankCodeStr,
     });
   } catch (flwErr) {
     const status = flwErr?.response?.status || "network";
     const flwBody = flwErr?.response?.data
-      ? JSON.stringify(flwErr.response.data).slice(0, 400)
+      ? JSON.stringify(flwErr.response.data).slice(0, 800)
       : "none";
     const flwMsg = flwErr?.response?.data?.message || flwErr?.message || String(flwErr).slice(0, 400);
+    const flwStack = String(flwErr?.stack || "").split("\n").slice(0, 3).join(" <- ").slice(0, 500);
     console.log(
-      `[BANK] DIAG: ✗ FLW /accounts/resolve FAILED | http: ${status} | msg: ${flwMsg} | body: ${flwBody}`
+      `[BANK] DIAG: ✗ FLW /accounts/resolve FAILED | bankCode: ${bankCodeStr} | accountNumber: ${maskAccount(acctStr)} | http: ${status} | msg: ${flwMsg} | body: ${flwBody} | stack: ${flwStack}`
     );
     throw flwErr;
   }
   const raw = response.data?.data || {};
   console.log(
-    `[BANK] DIAG: ✔ FLW /accounts/resolve OK | http: ${response.status} | resolvedAccountName: ${raw.account_name || "—"} | raw: ${JSON.stringify(response.data).slice(0, 300)}`
+    `[BANK] DIAG: ✔ FLW /accounts/resolve OK | bankCode: ${bankCodeStr} | accountNumber: ${maskAccount(acctStr)} | http: ${response.status} | resolvedAccountName: ${raw.account_name || "—"} | raw: ${JSON.stringify(response.data).slice(0, 600)}`
   );
   return {
     data: {

@@ -2,6 +2,17 @@ const Joi = require("joi");
 const AppError = require("../Utilis/AppError");
 const formatValidationError = require("../Utilis/formatValidationError");
 
+/**
+ * Mask an account number for logs: keeps first 4 + last 4 so the developer
+ * can confirm the input that was actually received, without exposing the
+ * full number in production logs. NEVER log the full account number.
+ */
+const maskAccount = (num) => {
+  const s = String(num || "");
+  if (s.length <= 8) return `len=${s.length}`;
+  return `${s.slice(0, 4)}****${s.slice(-4)} (len=${s.length})`;
+};
+
 const initiateDepositSchema = Joi.object({
   amount: Joi.number().positive().min(100).required(),
   method: Joi.string().trim().optional(),
@@ -42,10 +53,15 @@ const validateVerifyDeposit = (req, res, next) => {
 const validateVerifyBank = (req, res, next) => {
   const { error, value } = verifyBankSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
   if (error) {
-    console.log(`[BANK] verify-bank validation failed | error: ${error.message}`);
+    const raw = req.body || {};
+    console.log(
+      `[BANK] verify-bank validation failed | bankCode: ${raw.bankCode || "—"} | accountNumber: ${maskAccount(raw.accountNumber)} | error: ${error.message}`
+    );
     throw new AppError(formatValidationError(error), 400);
   }
-  console.log(`[BANK] verify-bank validation passed | bankCode: ${value.bankCode}`);
+  console.log(
+    `[BANK] verify-bank validation passed | bankCode: ${value.bankCode} | accountNumber: ${maskAccount(value.accountNumber)} | body: ${JSON.stringify({ accountNumber: maskAccount(value.accountNumber), bankCode: value.bankCode })}`
+  );
   req.body = value;
   next();
 };
