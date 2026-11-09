@@ -11,6 +11,7 @@ const {
   createNotification,
 } = require("../Utilis/notificationHelper");
 const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
+const { recordMinuteTransaction } = require("../Services/TransactionService");
 
 const MONTHLY_MINUTES_AMOUNT = 500;
 
@@ -1119,6 +1120,24 @@ exports.verifyMinutes = async (
     console.log(
       `[MINUTES CALLBACK] ✔ finished OK | ref: ${ref} | TX: ${flwData.id} | months settled: ${settledMinutes.length} | settled amount: ${settledAmount || "—"} — member notified + audit logged`
     );
+
+    // Dual-write: dedicated minute transaction record (idempotent by reference).
+    await recordMinuteTransaction({
+      userId,
+      reference: ref,
+      transactionId: String(flwData.id),
+      amount: paidNaira,
+      currency: "NGN",
+      status: "completed",
+      method: "flutterwave",
+      paidAt: new Date(),
+      metadata: {
+        source: "verifyMinutes",
+        monthsSettled: settledMinutes.length,
+        grossAmount,
+        settledAmount: settledNaira,
+      },
+    });
 
     return res.json({
       success: true,

@@ -6,6 +6,7 @@ const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const { ReferralService } = require("./ReferralService");
+const { recordMembershipTransaction } = require("./TransactionService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
 
@@ -419,6 +420,19 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
     user.membershipFeeTxRef = flwTxRef || paymentRef;
     user.membershipFeePaidAt = new Date();
     await user.save();
+
+    // Dual-write: dedicated membership transaction record (idempotent by reference).
+    await recordMembershipTransaction({
+      userId,
+      reference: String(flwTxRef || paymentRef),
+      transactionId: String(payment?.id || txId || flwTxRef || paymentRef),
+      amount: MEMBERSHIP_FEE_AMOUNT,
+      currency: "NGN",
+      status: "completed",
+      method: "flutterwave",
+      paidAt: user.membershipFeePaidAt || new Date(),
+      metadata: { source: "verifyMembershipFee" },
+    });
 
     return {
       alreadyPaid: false,

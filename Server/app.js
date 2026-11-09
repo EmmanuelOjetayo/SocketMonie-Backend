@@ -39,6 +39,7 @@ const referralRoutes = require("../Routes/ReferralRoutes");
 const scoreRoutes = require("../Routes/ScoreRoutes");
 const tierRoutes = require("../Routes/TierRoutes");
 const paymentRoutes = require("../Routes/PaymentRoutes");
+const transactionRoutes = require("../Routes/TransactionRoutes");
 const systemSettingsRoutes = require("../Routes/SystemSettingsRoutes");
 const guarantorRoutes = require("../Routes/GuarantorRoutes");
 const recoveryRoutes = require("../Routes/RecoveryRoutes");
@@ -230,6 +231,8 @@ app.use("/api/scores", scoreRoutes);
 app.use("/api/tier", tierRoutes);
 
 app.use("/api/payments", paymentRoutes);
+
+app.use("/api/transactions", transactionRoutes);
 
 app.use("/api/settings", systemSettingsRoutes);
 app.use(

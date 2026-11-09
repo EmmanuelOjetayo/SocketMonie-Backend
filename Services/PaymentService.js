@@ -8,6 +8,12 @@ const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
 const { ReferralService } = require("./ReferralService");
+const {
+  recordSavingsTransaction,
+  recordMinuteTransaction,
+  recordMembershipTransaction,
+  recordLoanTransaction,
+} = require("./TransactionService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT } = require("../Config/constants");
 
@@ -148,6 +154,21 @@ const verifyDeposit = async (userId, ref, transactionId) => {
   if (!savings) {
     return { alreadyVerified: true };
   }
+
+  // Dual-write: dedicated savings transaction record (idempotent by reference).
+  await recordSavingsTransaction({
+    userId: savings.userId,
+    type: savings.type === "withdrawal" ? "withdrawal" : "deposit",
+    reference: savings.reference || lookupRef,
+    transactionId: String(data.id),
+    amount: savings.amount,
+    fee: savings.fee || 0,
+    currency: "NGN",
+    status: "completed",
+    method: savings.method || "flutterwave",
+    paidAt: new Date(),
+    metadata: { savingsId: String(savings._id), source: "verifyDeposit" },
+  });
 
   await updateUserScore(savings.userId, "deposit");
 
@@ -310,6 +331,22 @@ const handleDepositWebhook = async (data) => {
     console.log(
       `[DEPOSIT WEBHOOK] ④ DB updated | deposit ${savings._id} completed for user ${savings.userId} | amount: ${finalAmount}`
     );
+
+    // Dual-write: dedicated savings transaction record (idempotent by reference).
+    await recordSavingsTransaction({
+      userId: savings.userId,
+      type: savings.type === "withdrawal" ? "withdrawal" : "deposit",
+      reference: savings.reference || reference,
+      transactionId: String(transactionId),
+      amount: finalAmount,
+      fee: savings.fee || 0,
+      currency: "NGN",
+      status: "completed",
+      method: savings.method || "flutterwave",
+      paidAt: new Date(),
+      metadata: { savingsId: String(savings._id), source: "depositWebhook" },
+    });
+
     await updateUserScore(savings.userId, "deposit");
     // Workflow K: may qualify a pending referral (idempotent). A failure here
     // must not fail the already-settled deposit and cannot be recovered by a
@@ -570,6 +607,22 @@ const handleRepaymentWebhook = async (data) => {
       targetId: repayment.loanId,
       details: { amount: settledAmount || repayment.amount, reference },
     });
+
+    // Dual-write: dedicated loan transaction record (idempotent by reference).
+    await recordLoanTransaction({
+      userId: repayment.userId,
+      loanId: repayment.loanId,
+      type: "loan_repayment",
+      reference,
+      transactionId: String(transactionId),
+      amount: settledAmount || repayment.amount,
+      currency: "NGN",
+      status: "completed",
+      method: "flutterwave",
+      paidAt: new Date(),
+      metadata: { source: "repaymentWebhook" },
+    });
+
     console.log(
       `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${settledAmount || repayment.amount} | user notified + audit logged`
     );
@@ -647,6 +700,19 @@ const handleMembershipFeeWebhook = async (data) => {
   user.membershipFeeTxRef = String(transactionId);
   await user.save();
   console.log(`[MEMBERSHIP WEBHOOK] ④ DB updated | user ${user._id} membership activated`);
+
+  // Dual-write: dedicated membership transaction record (idempotent by reference).
+  await recordMembershipTransaction({
+    userId: user._id,
+    reference: String(user.membershipFeeTxRef || reference),
+    transactionId: String(transactionId),
+    amount: MEMBERSHIP_FEE_AMOUNT,
+    currency: "NGN",
+    status: "completed",
+    method: "flutterwave",
+    paidAt: user.membershipFeePaidAt || new Date(),
+    metadata: { source: "membershipWebhook" },
+  });
 
   await createNotification({
     userId: user._id,
@@ -962,6 +1028,23 @@ const handleMinuteWebhook = async (data) => {
   console.log(
     `[MINUTES WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | months settled: ${settledCount} | user notified + audit logged`
   );
+
+  // Dual-write: dedicated minute transaction record (idempotent by reference).
+  await recordMinuteTransaction({
+    userId,
+    reference,
+    transactionId: String(transactionId),
+    amount: Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount),
+    currency: "NGN",
+    status: "completed",
+    method: "flutterwave",
+    paidAt: new Date(),
+    metadata: {
+      source: "minuteWebhook",
+      monthsSettled: settledCount,
+      resolvedVia: pendingPayment ? "reference-record" : "fallback-chain",
+    },
+  });
 };
 
 const processWebhook = async (rawBody, signature, event) => {

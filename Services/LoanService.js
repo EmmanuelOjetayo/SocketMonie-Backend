@@ -6,6 +6,7 @@ const { FinancialLedgerService } = require("./FinancialLedgerService");
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
+const { recordLoanTransaction } = require("./TransactionService");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const { runLoanDefaulterEscalation } = require("../Utilis/loanDefaulterEngine");
 const AppError = require("../Utilis/AppError");
@@ -1115,7 +1116,7 @@ const verifyLoanRepayment = async ({ userId, loanId, reference, tx_ref, transact
     { $set: { status: "completed", transactionId: String(payment.id), amount: paymentAmount } }
   );
 
-  return await processLoanRepayment({
+  const updatedLoan = await processLoanRepayment({
     loanId: loan._id,
     transactionId: String(payment.id || paymentRef),
     paymentAmount,
@@ -1123,6 +1124,23 @@ const verifyLoanRepayment = async ({ userId, loanId, reference, tx_ref, transact
     paymentMethod: "flutterwave",
     verifiedData: payment,
   });
+
+  // Dual-write: dedicated loan transaction record (idempotent by reference).
+  await recordLoanTransaction({
+    userId,
+    loanId: loan._id,
+    type: "loan_repayment",
+    reference: paymentReference,
+    transactionId: String(payment.id || paymentRef),
+    amount: paymentAmount,
+    currency: "NGN",
+    status: "completed",
+    method: "flutterwave",
+    paidAt: new Date(),
+    metadata: { source: "verifyLoanRepayment" },
+  });
+
+  return updatedLoan;
 };
 
 const triggerLoanDefaulterCheck = async () => {
