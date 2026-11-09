@@ -1190,17 +1190,27 @@ const verifyBankAccount = async (accountNumber, bankCode) => {
   try {
     result = await verifyAccount(accountNumber, bankCode);
   } catch (e) {
-    const flwMessage = e?.response?.data?.message || e?.message || "Bank verification failed";
+    const rawFlwMessage = e?.response?.data?.message || e?.message || "Bank verification failed";
     const flwBody = e?.response?.data
       ? JSON.stringify(e.response.data).slice(0, 600)
       : "none";
     console.log(
-      `[BANK] SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${maskAccount(accountNumber)} | errName: ${e?.name} | errStatus: ${e?.response?.status || e?.statusCode || "—"} | errMsg: ${flwMessage} | flwBody: ${flwBody}`
+      `[BANK] SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${maskAccount(accountNumber)} | errName: ${e?.name} | errStatus: ${e?.response?.status || e?.statusCode || "—"} | errMsg: ${rawFlwMessage} | flwBody: ${flwBody}`
     );
+    // FLW sandbox note: test keys only resolve TEST accounts. A real
+    // account verified with TEST credentials returns "invalid account" —
+    // that is an environment mismatch, not wrong input. Tell the user.
+    const secret = process.env.FLW_SECRET_KEY || process.env.FLWSECK || process.env.Flw_SECRET_KEY || "";
+    const isTestMode = /_TEST/i.test(secret);
+    const isInvalidAccount = /invalid account/i.test(rawFlwMessage);
+    const userMessage =
+      isTestMode && isInvalidAccount
+        ? `${rawFlwMessage}. Test mode: only test accounts resolve — use a test account number or switch to live Flutterwave keys.`
+        : rawFlwMessage;
     // Any Flutterwave rejection here is an expected business outcome
     // (invalid bank code, invalid account, etc.) — surface it as a clean
     // 400 so the frontend can display the reason, never a 500.
-    throw new AppError(flwMessage, e?.response?.status && Number(e.response.status) < 500 ? Number(e.response.status) : 400);
+    throw new AppError(userMessage, e?.response?.status && Number(e.response.status) < 500 ? Number(e.response.status) : 400);
   }
   console.log(
     `[BANK] SERVICE ok | bankCode: ${bankCode} | accountNumber: ${maskAccount(accountNumber)} | resolvedAccountName: ${result.data?.account_name || "—"}`

@@ -137,11 +137,25 @@ const getTransfer = async (transferId) => {
   return response.data;
 };
 
+/**
+ * Normalize a Flutterwave bank code to the exact string form FLW expects.
+ * FLW codes are strings with leading zeros (e.g. "058", "011"). If a code
+ * arrives as the number 58 (or string "58"), it must become "058" — never
+ * send "58", and never send the internal bank `_id`.
+ */
+const normalizeBankCode = (code) => {
+  const s = String(code ?? "").trim();
+  if (/^\d+$/.test(s) && s.length < 3) return s.padStart(3, "0");
+  return s;
+};
+
 const getBanks = async () => {
   const response = await client.get("/banks/NG");
   const body = response.data;
   const list = Array.isArray(body?.data) ? body.data : [];
-  const mapped = list.map((b) => ({ name: b.name, code: b.code, id: b.id }));
+  // IMPORTANT: expose the FLW `code` (string, leading zeros preserved) —
+  // the frontend must send THIS value back to /accounts/resolve, never `id`.
+  const mapped = list.map((b) => ({ name: b.name, code: normalizeBankCode(b.code), id: b.id }));
   console.log(
     `[BANK] DIAG: FLW /banks/NG OK | http: ${response.status} | total: ${mapped.length} | sample: ${JSON.stringify(mapped.slice(0, 5)).slice(0, 400)}`
   );
@@ -159,8 +173,10 @@ const maskAccount = (num) => {
 };
 
 const verifyAccount = async (accountNumber, bankCode) => {
-  const bankCodeStr = String(bankCode || "");
-  const acctStr = String(accountNumber || "");
+  // Both values MUST be strings — account_number especially, so leading
+  // zeros are never stripped by a Number() coercion.
+  const bankCodeStr = normalizeBankCode(bankCode);
+  const acctStr = String(accountNumber ?? "").replace(/\s+/g, "").trim();
   console.log(
     `[BANK] DIAG: → FLW /accounts/resolve | base: ${FLW_BASE_URL} | bankCode: ${bankCodeStr} | accountNumber: ${maskAccount(acctStr)} | request: ${JSON.stringify({ account_number: maskAccount(acctStr), account_bank: bankCodeStr })} | keyMode: ${FLW_SECRET_KEY ? (/_TEST/i.test(FLW_SECRET_KEY) ? "test" : "live") : "missing"}`
   );
