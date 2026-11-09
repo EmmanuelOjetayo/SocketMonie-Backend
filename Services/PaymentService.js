@@ -1172,18 +1172,19 @@ const reconcilePaymentByReference = async (reference) => {
 
 
 const verifyBankAccount = async (accountNumber, bankCode) => {
-  console.log(`[BANK] SERVICE verifyBankAccount entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: present`);
+  console.log(`[BANK] DIAG: SERVICE entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: ${accountNumber ? "present" : "missing"}`);
   if (!accountNumber || !bankCode) throw new AppError("Account number and bank code are required.", 400);
   let result;
   try {
     result = await verifyAccount(accountNumber, bankCode);
   } catch (e) {
+    const firstStackLine = String(e?.stack || "").split("\n").slice(0, 4).join(" <- ");
     console.log(
-      `[BANK] SERVICE verifyBankAccount FAILED | bankCode: ${bankCode ?? "undefined"} | error: ${e?.response?.data?.message || e?.message || e} | stack: ${String(e?.stack).split("\n")[0]}`
+      `[BANK] DIAG: SERVICE FAILED | bankCode: ${bankCode ?? "undefined"} | errName: ${e?.name} | errMsg: ${e?.message} | errStatus: ${e?.response?.status || e?.statusCode || "—"} | stack: ${firstStackLine.slice(0, 500)}`
     );
     throw e;
   }
-  console.log(`[BANK] bank account verified | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
+  console.log(`[BANK] DIAG: SERVICE ok | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
   return {
     accountNumber: result.data.account_number,
     accountName: result.data.account_name,

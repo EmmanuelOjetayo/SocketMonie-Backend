@@ -146,7 +146,9 @@ const getBanks = async () => {
 
 const verifyAccount = async (accountNumber, bankCode) => {
   const bankCodeStr = String(bankCode || "");
-  console.log(`[BANK] FLW provider /accounts/resolve | bankCode: ${bankCodeStr} | accountNumber: ${accountNumber ? "present" : "missing"}`);
+  console.log(
+    `[BANK] DIAG: → FLW /accounts/resolve | bankCode: ${bankCodeStr} | accountNumber: present(len=${String(accountNumber || "").length})`
+  );
   let response;
   try {
     response = await client.post("/accounts/resolve", {
@@ -154,14 +156,20 @@ const verifyAccount = async (accountNumber, bankCode) => {
       account_bank: bankCodeStr,
     });
   } catch (flwErr) {
+    const status = flwErr?.response?.status || "network";
+    const flwBody = flwErr?.response?.data
+      ? JSON.stringify(flwErr.response.data).slice(0, 400)
+      : "none";
+    const flwMsg = flwErr?.response?.data?.message || flwErr?.message || String(flwErr).slice(0, 400);
     console.log(
-      `[BANK] FLW /accounts/resolve failed for bank ${bankCodeStr}: ` +
-        (flwErr?.response?.data?.message || flwErr?.message || flwErr)
+      `[BANK] DIAG: ✗ FLW /accounts/resolve FAILED | http: ${status} | msg: ${flwMsg} | body: ${flwBody}`
     );
     throw flwErr;
   }
   const raw = response.data?.data || {};
-  console.log(`[BANK] FLW provider /accounts/resolve response | bankCode: ${bankCodeStr} | resolvedAccountName: ${raw.account_name || "—"}`);
+  console.log(
+    `[BANK] DIAG: ✔ FLW /accounts/resolve OK | http: ${response.status} | resolvedAccountName: ${raw.account_name || "—"} | raw: ${JSON.stringify(response.data).slice(0, 300)}`
+  );
   return {
     data: {
       account_number: raw.account_number || accountNumber,
