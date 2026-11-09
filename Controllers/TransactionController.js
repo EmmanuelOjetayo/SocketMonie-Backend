@@ -1,4 +1,6 @@
-const { TransactionService } = require("../Services/TransactionService");
+// TransactionService exports its functions directly (flat module), so the
+// whole module is the service object — no `{ TransactionService }` named export.
+const TransactionService = require("../Services/TransactionService");
 
 /**
  * GET /api/transactions
