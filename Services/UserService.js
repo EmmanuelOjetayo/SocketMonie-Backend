@@ -86,6 +86,9 @@ const SetPinService = async (reqBody, reqUserID) => {
 
 const BankDetailService = async (reqBody, reqUserID) => {
   const { bankName, bankCode, accountName, accountNumber } = reqBody;
+  console.log(
+    `[BANK] saving bank details | userId: ${reqUserID} | bankName: ${bankName || "—"} | bankCode: ${bankCode || "—"} | accountName: ${accountName || "—"} | accountNumber: ${accountNumber ? `present(len=${String(accountNumber).length})` : "missing"}`
+  );
   const updatedUser = await UserRepository.UpdateDetails(reqUserID, {
     bankDetails: {
       bankName,
@@ -98,6 +101,8 @@ const BankDetailService = async (reqBody, reqUserID) => {
   });
 
   if (!updatedUser) throw new AppError("User not found", 404);
+
+  console.log(`[BANK] bank details saved | userId: ${reqUserID} | verified: ${updatedUser?.bankDetails?.verified}`);
 
 return {
     bankDetails:updatedUser.bankDetails,

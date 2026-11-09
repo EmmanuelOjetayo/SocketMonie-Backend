@@ -42,8 +42,10 @@ const validateVerifyDeposit = (req, res, next) => {
 const validateVerifyBank = (req, res, next) => {
   const { error, value } = verifyBankSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
   if (error) {
+    console.log(`[BANK] verify-bank validation failed | error: ${error.message}`);
     throw new AppError(formatValidationError(error), 400);
   }
+  console.log(`[BANK] verify-bank validation passed | bankCode: ${value.bankCode}`);
   req.body = value;
   next();
 };

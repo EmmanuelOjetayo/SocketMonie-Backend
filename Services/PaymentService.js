@@ -863,10 +863,12 @@ const handleMinuteWebhook = async (data) => {
       const budget = pendingPayment
         ? Number(pendingPayment.amount || 0)
         : Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount);
-      const paid = Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount);
+      const paid = Number(verifiedData.charged_amount ?? verifiedData.amount ?? amount);
 
       // Underpayment: settle nothing. The record stays pending for the
       // reconciliation cron or a manual review — never a partial free settlement.
+      // Compare against the GROSS charged amount so fee-inclusive budgets
+      // (totalPayable) and charged amounts are on the same scale.
       if (!budget || paid + 0.01 < budget) return;
 
       // Largest prefix of outstanding obligations (oldest first) whose
@@ -1089,6 +1091,7 @@ const reconcilePaymentByReference = async (reference) => {
 const verifyBankAccount = async (accountNumber, bankCode) => {
   if (!accountNumber || !bankCode) throw new AppError("Account number and bank code are required.", 400);
   const result = await verifyAccount(accountNumber, bankCode);
+  console.log(`[BANK] bank account verified | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
   return {
     accountNumber: result.data.account_number,
     accountName: result.data.account_name,

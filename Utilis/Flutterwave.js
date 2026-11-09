@@ -145,11 +145,13 @@ const getBanks = async () => {
 };
 
 const verifyAccount = async (accountNumber, bankCode) => {
+  console.log(`[BANK] FLW provider /accounts/resolve | bankCode: ${bankCode} | accountNumber: ${accountNumber ? "present" : "missing"}`);
   const response = await client.post("/accounts/resolve", {
     account_number: accountNumber,
     account_bank: bankCode,
   });
   const raw = response.data?.data || {};
+  console.log(`[BANK] FLW provider /accounts/resolve response | bankCode: ${bankCode} | resolvedAccountName: ${raw.account_name || "—"}`);
   return {
     data: {
       account_number: raw.account_number || accountNumber,

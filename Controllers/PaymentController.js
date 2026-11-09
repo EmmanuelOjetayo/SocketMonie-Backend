@@ -131,12 +131,19 @@ exports.webhook = async (req, res) => {
 exports.verifyBankAccount = async (req, res, next) => {
   try {
     const { accountNumber, bankCode } = req.body;
+    console.log(
+      `[BANK] verify-bank request received | bankCode: ${bankCode || "—"} | accountNumber: ${accountNumber ? `present(len=${String(accountNumber).length})` : "missing"}`
+    );
     const data = await PaymentService.verifyBankAccount(accountNumber, bankCode);
+    console.log(
+      `[BANK] verify-bank responded success | bankCode: ${bankCode} | resolvedAccountName: ${data?.accountName || "—"}`
+    );
     return res.status(200).json({
       success: true,
       data,
     });
   } catch (err) {
+    console.log(`[BANK] verify-bank failed | bankCode: ${bankCode || "—"} | error: ${err?.message || err}`);
     next(err);
   }
 };
