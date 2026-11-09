@@ -145,18 +145,28 @@ const getBanks = async () => {
 };
 
 const verifyAccount = async (accountNumber, bankCode) => {
-  console.log(`[BANK] FLW provider /accounts/resolve | bankCode: ${bankCode} | accountNumber: ${accountNumber ? "present" : "missing"}`);
-  const response = await client.post("/accounts/resolve", {
-    account_number: accountNumber,
-    account_bank: bankCode,
-  });
+  const bankCodeStr = String(bankCode || "");
+  console.log(`[BANK] FLW provider /accounts/resolve | bankCode: ${bankCodeStr} | accountNumber: ${accountNumber ? "present" : "missing"}`);
+  let response;
+  try {
+    response = await client.post("/accounts/resolve", {
+      account_number: accountNumber,
+      account_bank: bankCodeStr,
+    });
+  } catch (flwErr) {
+    console.log(
+      `[BANK] FLW /accounts/resolve failed for bank ${bankCodeStr}: ` +
+        (flwErr?.response?.data?.message || flwErr?.message || flwErr)
+    );
+    throw flwErr;
+  }
   const raw = response.data?.data || {};
-  console.log(`[BANK] FLW provider /accounts/resolve response | bankCode: ${bankCode} | resolvedAccountName: ${raw.account_name || "—"}`);
+  console.log(`[BANK] FLW provider /accounts/resolve response | bankCode: ${bankCodeStr} | resolvedAccountName: ${raw.account_name || "—"}`);
   return {
     data: {
       account_number: raw.account_number || accountNumber,
       account_name: raw.account_name || "",
-      bank_code: bankCode,
+      bank_code: bankCodeStr,
     },
   };
 };
