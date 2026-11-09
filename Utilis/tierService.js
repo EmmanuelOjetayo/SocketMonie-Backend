@@ -43,7 +43,7 @@ function getTierBySavings(averageMonthlySavings) {
 function meetsKYCForTier(user, tier) {
     const required = TIER_CONFIG[tier].requiredKYC;
     const missing = [];
-    const hasPassport = !!user.selfieUrl;
+    const hasPassport = !!(user.avatarUrl || user.selfieUrl);
     const hasNIN = !!user.nin;
     const hasBVN = !!user.bvn;
     const hasDriversLicenseOrVoter = (user.documentType === 'drivers_license' || user.documentType === 'voters_card') && !!user.documentUrl;

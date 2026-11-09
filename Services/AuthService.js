@@ -10,6 +10,7 @@ const verifyOtpTemplate = require("../Utilis/emailTemplates/verifyOtp");
 const forgotPasswordTemplate = require("../Utilis/emailTemplates/forgotPassword");
 
 const AppError = require("../Utilis/AppError")
+const { toSafeUserPayload } = require("../Utilis/userPayload")
 
 /**
  * Mask an email for logs: "praisee827@gmail.com" -> "pr********@gmail.com".
@@ -133,7 +134,8 @@ const RegisterService = async(userData)=>{
                 email: newUser.email, 
                 fullName: newUser.fullName, 
                 isVerified: newUser.isVerified,
-                membershipFeePaid: newUser.membershipFeePaid 
+                membershipFeePaid: newUser.membershipFeePaid,
+                avatarUrl: newUser.avatarUrl || newUser.selfieUrl || null,
               }
         return responseData
     
@@ -162,12 +164,7 @@ const LoginService = async({email, password})=>{
       throw new AppError("Please accept the Socket Monie Terms and Conditions and Privacy Policy before accessing your account.", 403);
     }
     
-    const user = foundUser.toObject();
-    delete user.password;
-    delete user.otp;
-    delete user.otpExpiresAt;
-    delete user.resetPasswordOTP;
-    delete user.resetPasswordOTPExpiresAt;
+    const user = toSafeUserPayload(foundUser);
 
     const token = genJWT(foundUser._id); 
     return { user, token , requiresVerification}
@@ -188,12 +185,7 @@ const VerifyOTPService = async({email, otp})=>{
     await AuthRepository.updateVerifyOTPToMongo(email, foundUser.otp);
     const token =  genJWT(foundUser._id);
 
-    const user = foundUser.toObject();
-    delete user.password;
-    delete user.otp;
-    delete user.otpExpiresAt;
-    delete user.resetPasswordOTP;
-    delete user.resetPasswordOTPExpiresAt;
+    const user = toSafeUserPayload(foundUser);
 
     return { token, user, verified: true };
 }

@@ -16,10 +16,65 @@ const UserInfo = async(id)=>{
 
     userData.bvn = maskId(userData.bvn);
     userData.nin = maskId(userData.nin);
+    // Canonical API field for TopHeader/Profile — never expose Cloudinary secrets.
+    userData.avatarUrl = userData.avatarUrl || userData.selfieUrl || null;
+    userData.selfieUrl = userData.selfieUrl || userData.avatarUrl || null;
 
     return userData
 
 }
+
+/**
+ * Profile-picture upload (single canonical path). Persists the Cloudinary
+ * secure URL into `avatarUrl` (+ legacy `selfieUrl`) and the `public_id` so a
+ * later replacement can delete the old asset. If DB persistence fails after a
+ * successful upload, the newly uploaded asset is destroyed (no orphans).
+ * Never logs the secure URL or credentials — only the public_id / presence.
+ */
+const UploadProfilePictureService = async (file, reqUserID) => {
+  if (!file?.path) throw new AppError('Profile picture upload failed.', 400);
+  const secureUrl = file.path;
+  const publicId = file.public_id || null;
+
+  const existing = await UserRepository.findUserDetails(reqUserID, { includeSensitive: true });
+  const oldPublicId = existing?.profilePicturePublicId || null;
+
+  let updatedUser;
+  try {
+    updatedUser = await UserRepository.UpdateDetails(reqUserID, {
+      avatarUrl: secureUrl,
+      selfieUrl: secureUrl,
+      profilePicturePublicId: publicId,
+    }, { includeSensitive: true });
+  } catch (err) {
+    // Orphan cleanup: delete the just-uploaded asset.
+    try {
+      if (publicId) await cloudinary.uploader.destroy(publicId);
+    } catch (cleanupErr) {
+      console.error("Profile picture orphan cleanup failed:", cleanupErr?.message || cleanupErr);
+    }
+    throw err;
+  }
+
+  if (!updatedUser) throw new AppError('User account not found', 404);
+
+  // Replacement hygiene — best-effort delete of the previous asset.
+  if (oldPublicId && publicId && oldPublicId !== publicId) {
+    try {
+      await cloudinary.uploader.destroy(oldPublicId);
+    } catch (destroyErr) {
+      console.error("Old profile picture cleanup failed:", destroyErr?.message || destroyErr);
+    }
+  }
+
+  console.log(`[PROFILE PICTURE] avatar saved | userId: ${reqUserID} | secure_url stored: true | public_id: ${publicId || "—"}`);
+
+  return {
+    avatarUrl: updatedUser.avatarUrl,
+    selfieUrl: updatedUser.selfieUrl,
+    user: updatedUser,
+  };
+};
 
 const KYCUploadService = async (reqBody, file, reqUserID) => {
   if (!file?.path) throw new AppError('Uploaded document could not be stored', 400);
@@ -216,6 +271,7 @@ const AcceptTermsService = async (reqUserID, termsAccepted, privacyAccepted) => 
 
 const UserService = {
     UserInfo, KYCUploadService, SetPinService, BankDetailService,
+    UploadProfilePictureService,
     ForgotPin, ResetPin, UpdateProfile, UpdatePersonalInfo, AcceptTermsService
 }
 

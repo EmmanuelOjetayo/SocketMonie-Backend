@@ -5,7 +5,7 @@ const User = require("../Models/UserModel");
 
 const GuarantorRepository = {
   findUserByReferralCode: (referralCode) =>
-    User.findOne({ referralCode }).select("_id fullName email phone referralCode tier profileImage"),
+    User.findOne({ referralCode }).select("_id fullName email phone referralCode tier avatarUrl"),
 
   findCompletedSavings: (userId) => Savings.find({ userId, status: "completed" }),
 
@@ -20,7 +20,7 @@ const GuarantorRepository = {
   findByToken: (token) =>
     Guarantor.findOne({ verificationToken: token })
       .populate("loanId", "loanNumber principalAmount interestAmount interestRate totalRepayable durationMonths purpose loanType status createdAt")
-      .populate("applicantId", "fullName email phone referralCode profileImage kycStatus createdAt"),
+      .populate("applicantId", "fullName email phone referralCode avatarUrl kycStatus createdAt"),
 
   findRawByToken: (token, session = null) => {
     const query = Guarantor.findOne({ verificationToken: token });
@@ -31,7 +31,7 @@ const GuarantorRepository = {
   findPendingForUser: (userId) =>
     Guarantor.find({ guarantorUserId: userId, status: "pending", isReplaced: false })
       .populate("loanId", "loanNumber principalAmount interestAmount interestRate totalRepayable durationMonths purpose loanType status createdAt")
-      .populate("applicantId", "fullName email phone referralCode profileImage kycStatus createdAt")
+      .populate("applicantId", "fullName email phone referralCode avatarUrl kycStatus createdAt")
       .lean(),
 
   findSummaryGuarantees: (userId) =>

@@ -114,6 +114,9 @@ thisMonthMinutesUnpaid: {
     bvn: { type: String, default: null },
     nin: { type: String, default: null },
     selfieUrl: { type: String, default: null },
+    // Canonical profile-picture URL (Cloudinary secure_url) for TopHeader/Profile.
+    avatarUrl: { type: String, default: null },
+    profilePicturePublicId: { type: String, default: null },
     tierUpgradeRequest: {
         requestedTier: { type: String, enum: ["Bronze", "Silver", "Gold", "Platinum"], default: null },
         status: { type: String, enum: ["pending", "approved", "rejected"], default: null },

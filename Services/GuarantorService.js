@@ -59,7 +59,7 @@ const search = async (referralCode, userId, loanAmount = 0) => {
     phone: guarantor.phone,
     referralCode: guarantor.referralCode,
     tier: guarantor.tier,
-    profileImage: guarantor.profileImage,
+    avatarUrl: guarantor.avatarUrl,
     netSavings,
   };
 };
