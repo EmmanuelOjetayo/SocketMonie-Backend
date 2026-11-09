@@ -1172,8 +1172,17 @@ const reconcilePaymentByReference = async (reference) => {
 
 
 const verifyBankAccount = async (accountNumber, bankCode) => {
+  console.log(`[BANK] SERVICE verifyBankAccount entered | bankCode: ${bankCode ?? "undefined"} | accountNumber: present`);
   if (!accountNumber || !bankCode) throw new AppError("Account number and bank code are required.", 400);
-  const result = await verifyAccount(accountNumber, bankCode);
+  let result;
+  try {
+    result = await verifyAccount(accountNumber, bankCode);
+  } catch (e) {
+    console.log(
+      `[BANK] SERVICE verifyBankAccount FAILED | bankCode: ${bankCode ?? "undefined"} | error: ${e?.response?.data?.message || e?.message || e} | stack: ${String(e?.stack).split("\n")[0]}`
+    );
+    throw e;
+  }
   console.log(`[BANK] bank account verified | bankCode: ${bankCode} | resolvedAccountName: ${result.data?.account_name || "—"}`);
   return {
     accountNumber: result.data.account_number,
