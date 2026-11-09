@@ -15,11 +15,13 @@ const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
   if (!user) throw new AppError("User not found", 404);
 
-  // Standardized reference shape (fix 2): server-generated,
-  // prefix-tagged, collision-resistant `PREFIX-<userId>-<timestamp>`
-  // — same proven pattern as the Minutes flow and the CAMP/GLS
-  // reference projects. Contains only characters Flutterwave accepts.
-  const reference = `DEP-${userId.toString()}-${Date.now()}`;
+  // Reference shape (restored): `DEP_<ts>_<hex>_<userId[-6]>` — underscore
+  // format REQUIRED because the webhook dispatcher (processWebhook) routes
+  // by `reference.startsWith("DEP_")`, and the reconciliation sweep filters
+  // `/^DEP_/`. Hyphen refs (fix 2) never reached their handler.
+  const reference = `DEP_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
+    .toString()
+    .slice(-6)}`;
   const pendingDeposit = await PaymentRepository.createPendingDeposit({
     userId,
     amount,
@@ -226,9 +228,17 @@ const handleDepositWebhook = async (data) => {
   const grossAmount = Number(data.charged_amount ?? data.amount ?? 0);
   const settledAmount = Number(data.amount_settled ?? data.amount ?? 0);
 
-  if (!transactionId || !reference) return;
+  console.log(
+    `[DEPOSIT WEBHOOK] ① received | ref: ${reference} | TX: ${transactionId} | status: ${status} | gross: ${grossAmount} | settled: ${settledAmount}`
+  );
+
+  if (!transactionId || !reference) {
+    console.log("[DEPOSIT WEBHOOK] ✗ missing reference or transaction id — ignoring event");
+    return;
+  }
   if (status !== "successful") {
     // Only successful charges complete deposits; failures handled via verify path UX.
+    console.log(`[DEPOSIT WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
     return;
   }
   // Flutterwave best practice: re-verify with the API before fulfilling.
@@ -236,14 +246,26 @@ const handleDepositWebhook = async (data) => {
   try {
     verified = await verifyTransactionById(transactionId);
   } catch (e) {
+    console.log(`[DEPOSIT WEBHOOK] ✗ FLW re-verify threw: ${e?.message || e} — no settlement`);
     return;
   }
   const v = verified.data || {};
-  if (String(v.status || "").toLowerCase() !== "successful") return;
-  if (String(v.tx_ref || "") !== String(reference)) return;
-  if (String(v.currency || "NGN").toUpperCase() !== "NGN") return;
+  if (String(v.status || "").toLowerCase() !== "successful") {
+    console.log(`[DEPOSIT WEBHOOK] ✗ FLW re-verify says status "${v.status}" — no settlement`);
+    return;
+  }
+  if (String(v.tx_ref || "") !== String(reference)) {
+    console.log(`[DEPOSIT WEBHOOK] ✗ tx_ref mismatch | expected: ${reference} | got: ${v.tx_ref} — no settlement`);
+    return;
+  }
+  if (String(v.currency || "NGN").toUpperCase() !== "NGN") {
+    console.log(`[DEPOSIT WEBHOOK] ✗ currency mismatch: ${v.currency} — no settlement`);
+    return;
+  }
+  console.log(`[DEPOSIT WEBHOOK] ② FLW re-verify OK | ref match | NGN`);
 
   if (await PaymentRepository.isTransactionProcessed(transactionId, "savings")) {
+    console.log(`[DEPOSIT WEBHOOK] ✗ transaction ${transactionId} already processed — idempotent skip`);
     return;
   }
   const finalSettled = Number(v.amount_settled ?? v.amount ?? settledAmount);
@@ -252,6 +274,7 @@ const handleDepositWebhook = async (data) => {
   let savings;
   try {
     await session.withTransaction(async () => {
+      console.log(`[DEPOSIT WEBHOOK] ③ completing deposit record for ref ${reference} | settled: ${finalSettled}`);
       savings = await PaymentRepository.findAndCompleteDeposit(reference, {
         status: "completed",
         flutterwaveRef: String(transactionId),
@@ -277,10 +300,16 @@ const handleDepositWebhook = async (data) => {
     await session.endSession();
   }
 
-  if (!savings) return;
+  if (!savings) {
+    console.log(`[DEPOSIT WEBHOOK] ✗ finished — no matching pending deposit record for ref ${reference}`);
+    return;
+  }
 
   {
     const finalAmount = finalSettled || savings.amount;
+    console.log(
+      `[DEPOSIT WEBHOOK] ④ DB updated | deposit ${savings._id} completed for user ${savings.userId} | amount: ${finalAmount}`
+    );
     await updateUserScore(savings.userId, "deposit");
     // Workflow K: may qualify a pending referral (idempotent). A failure here
     // must not fail the already-settled deposit and cannot be recovered by a
@@ -306,6 +335,9 @@ const handleDepositWebhook = async (data) => {
       targetId: savings._id,
       details: { grossAmount, settledAmount: finalAmount, method: "flutterwave", reference },
     });
+    console.log(
+      `[DEPOSIT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${finalAmount} | user notified + audit logged`
+    );
   }
 };
 
@@ -464,26 +496,58 @@ const handleRepaymentWebhook = async (data) => {
   const transactionId = data.id;
   const settledAmount = Number(data.amount_settled ?? data.charged_amount ?? data.amount ?? 0);
 
-  if (!transactionId || !reference) return;
-  if (status !== "successful") return;
+  console.log(
+    `[REPAYMENT WEBHOOK] ① received | ref: ${reference} | TX: ${transactionId} | status: ${status} | settled: ${settledAmount}`
+  );
+
+  if (!transactionId || !reference) {
+    console.log("[REPAYMENT WEBHOOK] ✗ missing reference or transaction id — ignoring event");
+    return;
+  }
+  if (status !== "successful") {
+    console.log(`[REPAYMENT WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
+    return;
+  }
   // Re-verify before crediting a loan (FLW best practice).
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
-    if (String(v.status || "").toLowerCase() !== "successful") return;
-    if (String(v.tx_ref || "") !== String(reference)) return;
+    if (String(v.status || "").toLowerCase() !== "successful") {
+      console.log(`[REPAYMENT WEBHOOK] ✗ FLW re-verify says status "${v.status}" — no settlement`);
+      return;
+    }
+    if (String(v.tx_ref || "") !== String(reference)) {
+      console.log(`[REPAYMENT WEBHOOK] ✗ tx_ref mismatch | expected: ${reference} | got: ${v.tx_ref} — no settlement`);
+      return;
+    }
+    console.log("[REPAYMENT WEBHOOK] ② FLW re-verify OK | ref match");
   } catch (e) {
+    console.log(`[REPAYMENT WEBHOOK] ✗ FLW re-verify threw: ${e?.message || e} — no settlement`);
     return;
   }
 
-  if (await PaymentRepository.isTransactionProcessed(transactionId, "savings")) return;
+  if (await PaymentRepository.isTransactionProcessed(transactionId, "savings")) {
+    console.log(`[REPAYMENT WEBHOOK] ✗ transaction ${transactionId} already processed — idempotent skip`);
+    return;
+  }
 
   const repayment = await PaymentRepository.findRepaymentByReference(reference);
-  if (!repayment) return;
+  if (!repayment) {
+    console.log(`[REPAYMENT WEBHOOK] ✗ no matching repayment record for ref ${reference}`);
+    return;
+  }
 
-  if (repayment.flutterwaveRef && repayment.flutterwaveRef !== String(transactionId)) return;
+  if (repayment.flutterwaveRef && repayment.flutterwaveRef !== String(transactionId)) {
+    console.log(
+      `[REPAYMENT WEBHOOK] ✗ repayment already tied to another TX (${repayment.flutterwaveRef}) — ignoring`
+    );
+    return;
+  }
 
   if (status === "successful") {
+    console.log(
+      `[REPAYMENT WEBHOOK] ③ updating loan ${repayment.loanId} | userId: ${repayment.userId} | amount: ${settledAmount || repayment.amount}`
+    );
     await processLoanRepayment({
       loanId: repayment.loanId,
       transactionId: String(transactionId),
@@ -506,9 +570,13 @@ const handleRepaymentWebhook = async (data) => {
       targetId: repayment.loanId,
       details: { amount: settledAmount || repayment.amount, reference },
     });
+    console.log(
+      `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${settledAmount || repayment.amount} | user notified + audit logged`
+    );
   } else {
     repayment.status = "failed";
     await repayment.save();
+    console.log(`[REPAYMENT WEBHOOK] ✔ finished (failed) | ref: ${reference} | repayment marked failed + user notified`);
     await createNotification({
       userId: repayment.userId,
       type: "loan",
@@ -524,26 +592,61 @@ const handleMembershipFeeWebhook = async (data) => {
   const status = String(data.status || "").toLowerCase();
   const amount = Number(data.charged_amount ?? data.amount_settled ?? data.amount ?? 0);
 
-  if (status !== "successful") return;
-  if (!reference || !transactionId) return;
+  console.log(
+    `[MEMBERSHIP WEBHOOK] ① received | ref: ${reference} | TX: ${transactionId} | status: ${status} | amount: ${amount}`
+  );
+
+  if (status !== "successful") {
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
+    return;
+  }
+  if (!reference || !transactionId) {
+    console.log("[MEMBERSHIP WEBHOOK] ✗ missing reference or transaction id — ignoring event");
+    return;
+  }
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
-    if (String(v.status || "").toLowerCase() !== "successful") return;
-    if (String(v.tx_ref || "") !== String(reference)) return;
-    if (Number(v.charged_amount ?? v.amount ?? 0) < MEMBERSHIP_FEE_AMOUNT) return;
+    if (String(v.status || "").toLowerCase() !== "successful") {
+      console.log(`[MEMBERSHIP WEBHOOK] ✗ FLW re-verify says status "${v.status}" — no settlement`);
+      return;
+    }
+    if (String(v.tx_ref || "") !== String(reference)) {
+      console.log(`[MEMBERSHIP WEBHOOK] ✗ tx_ref mismatch | expected: ${reference} | got: ${v.tx_ref} — no settlement`);
+      return;
+    }
+    if (Number(v.charged_amount ?? v.amount ?? 0) < MEMBERSHIP_FEE_AMOUNT) {
+      console.log(
+        `[MEMBERSHIP WEBHOOK] ✗ verified amount ${v.charged_amount ?? v.amount} below fee ${MEMBERSHIP_FEE_AMOUNT} — no settlement`
+      );
+      return;
+    }
+    console.log(`[MEMBERSHIP WEBHOOK] ② FLW re-verify OK | ref match | amount ≥ fee`);
   } catch (e) {
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ FLW re-verify threw: ${e?.message || e} — no settlement`);
     return;
   }
-  if (amount < MEMBERSHIP_FEE_AMOUNT) return;
+  if (amount < MEMBERSHIP_FEE_AMOUNT) {
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ webhook amount ${amount} below fee ${MEMBERSHIP_FEE_AMOUNT} — no settlement`);
+    return;
+  }
 
   const user = await PaymentRepository.findUserByMembershipRef(reference);
-  if (!user || user.membershipFeePaid) return;
+  if (!user) {
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ no user found for membership ref ${reference}`);
+    return;
+  }
+  if (user.membershipFeePaid) {
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ user ${user._id} already has membership paid — idempotent skip`);
+    return;
+  }
 
+  console.log(`[MEMBERSHIP WEBHOOK] ③ updating user ${user._id} | marking membershipFeePaid: true`);
   user.membershipFeePaid = true;
   user.membershipFeePaidAt = new Date();
   user.membershipFeeTxRef = String(transactionId);
   await user.save();
+  console.log(`[MEMBERSHIP WEBHOOK] ④ DB updated | user ${user._id} membership activated`);
 
   await createNotification({
     userId: user._id,
@@ -571,6 +674,10 @@ const handleMembershipFeeWebhook = async (data) => {
       referralErr?.message || referralErr
     );
   }
+
+  console.log(
+    `[MEMBERSHIP WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | user ${user._id} activated + notified + audit logged`
+  );
 };
 
 const handleMinuteWebhook = async (data) => {
@@ -579,15 +686,26 @@ const handleMinuteWebhook = async (data) => {
   const status = String(data.status || "").toLowerCase();
   const amount = Number(data.charged_amount ?? data.amount_settled ?? data.amount ?? 0);
 
-  if (!reference || !transactionId) return;
+  console.log(
+    `[MINUTES WEBHOOK] ① received | ref: ${reference} | TX: ${transactionId} | status: ${status} | amount: ${amount}`
+  );
+
+  if (!reference || !transactionId) {
+    console.log("[MINUTES WEBHOOK] ✗ missing reference or transaction id — ignoring event");
+    return;
+  }
 
   // The checkout reference lives on a pending Savings record
   // created by initializeMinutes. Find it first.
   const pendingPayment = await PaymentRepository.findSavingsByReference(reference);
+  console.log(
+    `[MINUTES WEBHOOK] ② checkout record ${pendingPayment ? `found (status: ${pendingPayment.status})` : "NOT found — falling back"}`
+  );
   if (!pendingPayment && status !== "successful") return;
 
   if (status !== "successful") {
     if (pendingPayment.status === "completed") return;
+    console.log(`[MINUTES WEBHOOK] ③ marking checkout record FAILED (webhook status: ${status})`);
     pendingPayment.status = "failed";
     await pendingPayment.save();
     await createNotification({
@@ -596,6 +714,7 @@ const handleMinuteWebhook = async (data) => {
       title: "Monthly Contribution Failed",
       message: "Your SocketMinutes contribution could not be completed. Please try again.",
     });
+    console.log("[MINUTES WEBHOOK] ✔ failure flow finished (record failed + user notified)");
     return;
   }
 
@@ -604,10 +723,22 @@ const handleMinuteWebhook = async (data) => {
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
-    if (String(v.status || "").toLowerCase() !== "successful") return;
-    if (String(v.tx_ref || "") !== String(reference)) return;
+    if (String(v.status || "").toLowerCase() !== "successful") {
+      console.log(
+        `[MINUTES WEBHOOK] ✗ FLW re-verify says status "${v.status}" (not successful) — no settlement`
+      );
+      return;
+    }
+    if (String(v.tx_ref || "") !== String(reference)) {
+      console.log(
+        `[MINUTES WEBHOOK] ✗ FLW re-verify tx_ref mismatch | expected: ${reference} | got: ${v.tx_ref} — no settlement`
+      );
+      return;
+    }
+    console.log(`[MINUTES WEBHOOK] ④ FLW re-verify OK | ref match | settled amount: ${v.amount_settled ?? v.amount}`);
     verifiedData = v;
   } catch (e) {
+    console.log(`[MINUTES WEBHOOK] ✗ FLW re-verify threw: ${e?.message || e} — no settlement`);
     return;
   }
 
@@ -692,6 +823,10 @@ const handleMinuteWebhook = async (data) => {
     );
   }
 
+  console.log(
+    `[MINUTES WEBHOOK] ⑤ member resolved via ${pendingPayment ? "reference-record" : resolutionVia} | userId: ${(pendingPayment?.userId || userIdFallback).toString()}`
+  );
+
   if (pendingPayment && pendingPayment.status !== "completed" && pendingPayment.status !== "pending") {
     // Already terminal for another reason — leave it alone.
     return;
@@ -747,6 +882,9 @@ const handleMinuteWebhook = async (data) => {
       if (settleCount === 0) return;
 
       const toSettle = currentOutstanding.slice(0, settleCount);
+      console.log(
+        `[MINUTES WEBHOOK] ⑥ settling ${settleCount} month(s) | budget: ${budget} | paid: ${paid} | userId: ${userId}`
+      );
       const result = await Minutes.updateMany(
         {
           _id: { $in: toSettle.map((item) => item._id) },
@@ -763,6 +901,9 @@ const handleMinuteWebhook = async (data) => {
         { session }
       );
       settledCount = result.modifiedCount || 0;
+      console.log(
+        `[MINUTES WEBHOOK] ⑦ DB updated | months settled: ${settledCount} | current month included: ${settledCurrentMonth}`
+      );
 
       const now = new Date();
       settledCurrentMonth = toSettle.some(
@@ -780,7 +921,12 @@ const handleMinuteWebhook = async (data) => {
     await session.endSession();
   }
 
-  if (settledCount === 0) return;
+  if (settledCount === 0) {
+    console.log(
+      "[MINUTES WEBHOOK] ✗ finished with 0 months settled (no outstanding obligations, underpayment, or budget did not fit any prefix)"
+    );
+    return;
+  }
 
   // thisMonthMinutesUnpaid clears ONLY when the current month's obligation
   // was actually settled — not merely because some arrears were paid.
@@ -810,6 +956,10 @@ const handleMinuteWebhook = async (data) => {
         pendingPayment ? "reference-record" : "fallback-chain",
     },
   });
+
+  console.log(
+    `[MINUTES WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | months settled: ${settledCount} | user notified + audit logged`
+  );
 };
 
 const processWebhook = async (rawBody, signature, event) => {

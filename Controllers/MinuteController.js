@@ -57,7 +57,9 @@ if (!FLW_MODE.consistent) {
  * rejects (no dots, no spaces, no special punctuation).
  */
 function generateReference(userId) {
-  return `SocketMonnie-${userId.toString()}-${Date.now()}`;
+  return `MIN_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
+    .toString()
+    .slice(-6)}`;
 }
 
 /**
@@ -612,6 +614,10 @@ exports.verifyMinutes = async (
     const txId =
       transaction_id || transactionId || (/^\d+$/.test(String(ref || "")) ? String(ref) : null);
 
+    console.log(
+      `[MINUTES CALLBACK] ① received | ref: ${ref} | TX: ${txId} | caller: ${req.user?._id?.toString() || "unauthenticated"}`
+    );
+
     if (!ref && !txId) {
       return res.status(400).json({
         success: false,
@@ -646,6 +652,9 @@ exports.verifyMinutes = async (
     }).lean();
 
     if (duplicateGuard) {
+      console.log(
+        `[MINUTES CALLBACK] ✗ idempotent skip | ref: ${ref} | already completed (guard hit) — returning 200 without re-settling`
+      );
       return res.status(200).json({
         success: true,
         message: "Transaction already processed.",
@@ -668,6 +677,10 @@ exports.verifyMinutes = async (
       txId && /^\d+$/.test(String(txId))
         ? await verifyTransactionById(String(txId))
         : await verifyPayment(ref);
+
+    console.log(
+      `[MINUTES CALLBACK] ② FLW verify | ref: ${ref} | TX: ${txId} | status: ${verification?.status} | dataStatus: ${verification?.data?.status || "—"} | tx_ref: ${verification?.data?.tx_ref || "—"} | amount: ${verification?.data?.amount_settled ?? verification?.data?.amount ?? "—"}`
+    );
 
     if (
       verification?.status !==
@@ -700,6 +713,11 @@ exports.verifyMinutes = async (
 
     const flwData =
       verification.data;
+
+    // [MINUTES CALLBACK] verification succeeded → proceeding to ownership check + settlement
+    console.log(
+      `[MINUTES VERIFY] FLW verification OK | ref: ${ref} | TX: ${transactionId} | status: ${verification.data?.status} | amount: ${flwData.charged_amount ?? flwData.amount ?? 0}`
+    );
 
     /**
      * -----------------------------------------------------
@@ -831,6 +849,10 @@ exports.verifyMinutes = async (
 
     const expectedNaira =
       totalPayable;
+
+    console.log(
+      `[MINUTES CALLBACK] ③ amount check | paid: ${paidNaira} | expected: ${expectedNaira} | settledNaira: ${settledNaira}`
+    );
 
     if (paidNaira < expectedNaira) {
       return res.status(400).json({
@@ -972,7 +994,15 @@ exports.verifyMinutes = async (
 
         settledMinutes =
           currentOutstanding;
+
+        console.log(
+          `[MINUTES CALLBACK] ④ ATOMIC SETTLEMENT | settling ${currentOutstanding.length} outstanding month(s) | paid: ${paidNaira} | expected: ${currentTotalPayable}`
+        );
       }
+    );
+
+    console.log(
+      `[MINUTES CALLBACK] ⑤ settlement committed | settled months: ${settledMinutes.length}`
     );
 
     /**
@@ -1085,6 +1115,10 @@ exports.verifyMinutes = async (
      * 9. Return success
      * -----------------------------------------------------
      */
+    console.log(
+      `[MINUTES CALLBACK] ✔ finished OK | ref: ${ref} | TX: ${flwData.id} | months settled: ${settledMinutes.length} | settled amount: ${settledAmount || "—"} — member notified + audit logged`
+    );
+
     return res.json({
       success: true,
 

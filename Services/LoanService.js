@@ -770,6 +770,10 @@ const processLoanRepayment = async ({
   let totalPenalty = 0;
   let wasDuplicate = false;
 
+  console.log(
+    `[LOAN REPAYMENT WEBHOOK→SERVICE] received | loanId: ${loanId} | TX: ${transactionId} | ref: ${paymentReference} | amount: ${paymentAmount}`
+  );
+
   try {
     await session.withTransaction(async () => {
       const loan = await LoanRepository.findById(loanId, session);
@@ -789,8 +793,10 @@ const processLoanRepayment = async ({
       if (alreadyProcessed) {
         updatedLoan = loan;
         wasDuplicate = true;
+        console.log(`[LOAN REPAYMENT WEBHOOK→SERVICE] ✗ idempotent skip | loanId: ${loanId} | TX: ${transactionId} — already in repayment history`);
         return;
       }
+      console.log(`[LOAN REPAYMENT WEBHOOK→SERVICE] ② loan found | status: ${loan.status} | remainingBalance: ${loan.remainingBalance} | installments: ${loan.installments?.length}`);
 
       const settings = await getSystemSettings();
       const latePenaltyRate = settings.latePenaltyRate || LATE_PENALTY_RATE;
@@ -819,6 +825,9 @@ const processLoanRepayment = async ({
       // Never accept a repayment that exceeds the outstanding obligation
       // (prevents overpayment / double-amount acceptance).
       if (payment > loan.remainingBalance) {
+        console.log(
+          `[LOAN REPAYMENT WEBHOOK→SERVICE] ✗ overpayment blocked | payment: ${payment} | outstanding: ${loan.remainingBalance} — throwing`
+        );
         throw new AppError(
           `Payment of ₦${payment.toLocaleString()} exceeds the outstanding balance of ₦${loan.remainingBalance.toLocaleString()}.`,
           400
@@ -871,6 +880,10 @@ const processLoanRepayment = async ({
 
       await LoanRepository.saveLoan(loan, session);
 
+      console.log(
+        `[LOAN REPAYMENT WEBHOOK→SERVICE] ③ loan updated | loanId: ${loan._id} | userId: ${loan.userId} | amount: ${payment} | penalty: ${totalPenalty} | newBalance: ${loan.remainingBalance} | status: ${loan.status}`
+      );
+
       const repaymentTransaction = await LoanRepository.findSavings(
         { reference: paymentReference, type: "loan_repayment" },
         session
@@ -911,14 +924,23 @@ const processLoanRepayment = async ({
       });
 
       updatedLoan = loan;
+      console.log(
+        `[LOAN REPAYMENT WEBHOOK→SERVICE] ✔ settled | loan ${loan._id} repaid — amount: ${payment} | remainingBalance: ${loan.remainingBalance} | status: ${loan.status}`
+      );
     });
   } finally {
     await session.endSession();
   }
 
-  if (wasDuplicate) return updatedLoan;
+  if (wasDuplicate) {
+    console.log(`[LOAN REPAYMENT WEBHOOK→SERVICE] ✗ finished | idempotent duplicate — loan state unchanged`);
+    return updatedLoan;
+  }
 
   await updateUserScore(updatedLoan.userId, "loan_repayment");
+  console.log(
+    `[LOAN REPAYMENT WEBHOOK→SERVICE] ✔ finished OK | userId: ${updatedLoan.userId} | loanId: ${updatedLoan._id} | amount: ${paymentAmount} — score + audit + notifications next`
+  );
   await logAudit({
     userId: updatedLoan.userId,
     action: "loan_repayment",
@@ -977,9 +999,13 @@ const initializeLoanRepayment = async ({ userId, userEmail, userName, userPhone,
   const amount = Math.round(Number(paymentAmount));
   if (isNaN(amount) || amount <= 0) throw new AppError("Invalid repayment amount.", 400);
 
-  // Standardized reference shape (fix 2): `LRP-<userId>-<timestamp>`,
-  // same proven pattern as Minutes/Deposit references.
-  const tx_ref = `LRP-${userId.toString()}-${Date.now()}`;
+  // Reference shape (restored): `LRP_<ts>_<hex>_<userId[-6]>` — underscore
+  // format REQUIRED because the webhook dispatcher (processWebhook) routes
+  // by `reference.startsWith("LRP_")`/`"RPL_"`. Hyphen refs (fix 2) never
+  // reached their handler. verifyLoanRepayment still accepts both shapes.
+  const tx_ref = `LRP_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
+    .toString()
+    .slice(-6)}`;
 
   await LoanRepository.createSavingsRecord({
     userId,

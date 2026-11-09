@@ -1,4 +1,5 @@
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 const { SavingsRepository } = require("../Repositories/SavingsRepository");
 const { getMinCommitmentForTier, getTierBySavings, canUpgradeToTier } = require("../Utilis/tierService");
 const { createNotification } = require("../Utilis/notificationHelper");
@@ -309,10 +310,13 @@ const initializeMembershipFee = async (userId) => {
     throw new AppError("Membership fee has already been paid for this account.", 400);
   }
 
-  // Standardized reference shape (fix 2): `MEM-<userId>-<timestamp>`.
-  // The old `MEM_<ts>_<id>` format is what appeared in the production
-  // checkout console (`txRef: "MEM_1794144270031_6af060106ecfaeef74e2b088"`).
-  const tx_ref = `MEM-${user._id.toString()}-${Date.now()}`;
+  // Reference shape (restored): `MEM_<ts>_<hex>_<userId[-6]>` — underscore
+  // format REQUIRED because the webhook dispatcher (processWebhook) routes
+  // by `reference.startsWith("MEM_")`, and the reconciliation sweep filters
+  // `/^MEM_/`. Hyphen refs (fix 2) never reached their handler.
+  const tx_ref = `MEM_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${user._id
+    .toString()
+    .slice(-6)}`;
   user.membershipFeeTxRef = tx_ref;
   await user.save();
 
@@ -348,6 +352,7 @@ const initializeMembershipFee = async (userId) => {
 const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, transactionId }) => {
   const txId = transaction_id || transactionId || null;
   const paymentRef = tx_ref || reference || null;
+  console.log(`[MEMBERSHIP] ① verifyMembershipFee | ref: ${paymentRef} | TX: ${txId} | userId: ${userId}`);
   if (!paymentRef && !txId) {
     throw new AppError("Payment reference is required.", 400);
   }
@@ -359,18 +364,26 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
       : await verifyPayment(paymentRef);
   const payment = verification?.data;
 
+  console.log(
+    `[MEMBERSHIP] ② FLW verify | ref: ${paymentRef} | TX: ${txId} | verifyStatus: ${verification?.status} | dataStatus: ${payment?.status || "—"} | tx_ref: ${payment?.tx_ref || "—"}`
+  );
+
   // tx_ref returned by Flutterwave must match the expected SocketMonnie reference.
   const flwTxRef = String(payment?.tx_ref || payment?.reference || "").trim();
   if (paymentRef && flwTxRef && flwTxRef !== String(paymentRef).trim()) {
+    console.log(`[MEMBERSHIP] ✗ tx_ref mismatch | expected: ${paymentRef} | got: ${flwTxRef} — throwing`);
     throw new AppError("Invalid transaction reference", 400);
   }
   if (String(payment?.currency || "NGN").toUpperCase() !== "NGN") {
+    console.log(`[MEMBERSHIP] ✗ currency mismatch — throwing`);
     throw new AppError("Currency mismatch.", 400);
   }
 
   if (verification?.status === "success" && String(payment?.status || "").toLowerCase() === "successful") {
     const amountPaid = Number(payment.charged_amount ?? payment.amount_settled ?? payment.amount ?? 0);
+    console.log(`[MEMBERSHIP] ③ FLW OK | amountPaid: ${amountPaid} (fee: ${MEMBERSHIP_FEE_AMOUNT})`);
     if (amountPaid < MEMBERSHIP_FEE_AMOUNT) {
+      console.log(`[MEMBERSHIP] ✗ amount below fee — throwing (insufficient) | amountPaid: ${amountPaid}`);
       throw new AppError(
         `Payment amount (₦${amountPaid.toLocaleString()}) is less than the required membership fee of ₦${MEMBERSHIP_FEE_AMOUNT.toLocaleString()}.`,
         400
@@ -378,6 +391,7 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
     }
 
     const user = await SavingsRepository.findUserById(userId);
+    console.log(`[MEMBERSHIP] ④ user found | membershipFeePaid before: ${user?.membershipFeePaid}`);
     if (!user) {
       throw new AppError("User not found.", 404);
     }
@@ -393,12 +407,14 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
     }
 
     if (user.membershipFeePaid) {
+      console.log(`[MEMBERSHIP] ✗ alreadyPaid | user ${userId} — returning idempotent success`);
       return {
         alreadyPaid: true,
         membershipFeePaid: true,
       };
     }
 
+    console.log(`[MEMBERSHIP] ⑤ DB update | marking user ${userId} membershipFeePaid: true`);
     user.membershipFeePaid = true;
     user.membershipFeeTxRef = flwTxRef || paymentRef;
     user.membershipFeePaidAt = new Date();
