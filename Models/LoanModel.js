@@ -138,6 +138,17 @@ const LoanSchema = new mongoose.Schema(
       default: null,
     },
 
+    rejectedAt: {
+      type: Date,
+      default: null,
+    },
+
+    rejectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Users",
+      default: null,
+    },
+
     approvedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
@@ -163,6 +174,10 @@ const LoanSchema = new mongoose.Schema(
 
     disbursedAt: Date,
     completedAt: Date,
+    lastPaymentAt: {
+      type: Date,
+      default: null,
+    },
 
     disbursementMethod: {
       type: String,

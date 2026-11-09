@@ -44,5 +44,7 @@ router.put("/settings", AdminValidate.validateSystemSettings, adminController.up
 router.get("/score/config", scoreController.getActiveConfig);
 router.get("/score/config/history", scoreController.getConfigHistory);
 router.put("/score/config", scoreController.updateScoringConfig);
+router.post("/score/members/:userId/recalculate", scoreController.recalculateForAdmin);
+router.post("/score/members/:userId/finalize", scoreController.recalculateForAdmin);
 
 module.exports = router;

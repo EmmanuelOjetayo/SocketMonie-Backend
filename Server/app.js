@@ -334,6 +334,23 @@ const startServer = async () => {
       console.error("⚠️  Reconciliation cron failed to start:", cronErr.message);
     }
 
+    // SocketScore: finalize last month's CGPA-style scores on the 1st.
+    try {
+      const { startSocketScoreCron } = require("../Utilis/socketScoreCron");
+      startSocketScoreCron();
+    } catch (cronErr) {
+      console.error("⚠️  SocketScore cron failed to start:", cronErr.message);
+    }
+
+    // Loan defaulter escalation: advance overdue → warning → default → restricted
+    // → recovery. Idempotent, daily (03:00). Never auto-deducts funds.
+    try {
+      const { startLoanDefaulterCron } = require("../Utilis/loanDefaulterCron");
+      startLoanDefaulterCron();
+    } catch (cronErr) {
+      console.error("⚠️  Loan defaulter cron failed to start:", cronErr.message);
+    }
+
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);

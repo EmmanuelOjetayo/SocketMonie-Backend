@@ -12,6 +12,7 @@ const {
 } = require("../Utilis/notificationHelper");
 const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 const { recordMinuteTransaction } = require("../Services/TransactionService");
+const { updateUserScore } = require("../Utilis/scoreService");
 
 const MONTHLY_MINUTES_AMOUNT = 500;
 
@@ -1138,6 +1139,14 @@ exports.verifyMinutes = async (
         settledAmount: settledNaira,
       },
     });
+
+    // SocketScore: minutes payment is verified financial activity — recalc
+    // the current month provisionally (guarded; never fails verification).
+    try {
+      await updateUserScore(userId, "minutes_paid");
+    } catch (scoreErr) {
+      console.error("Minutes score update failed:", scoreErr?.message || scoreErr);
+    }
 
     return res.json({
       success: true,

@@ -38,11 +38,13 @@ exports.respondToGuarantorRequest = async (req, res, next) => {
 
 exports.getGuarantorByLoan = async (req, res, next) => {
   try {
-    const { guarantor, loan } = await GuarantorService.getByLoan(req.params.loanId, req.user._id, req.user.role);
+    const result = await GuarantorService.getByLoan(req.params.loanId, req.user._id, req.user.role);
+    const list = Array.isArray(result.guarantors) ? result.guarantors : [result.guarantor].filter(Boolean);
+    const loan = result.loan;
 
     return res.status(200).json({
       success: true,
-      guarantor: {
+      guarantors: list.map((guarantor) => ({
         id: guarantor._id,
         fullName: guarantor.guarantorName,
         email: guarantor.guarantorEmail,
@@ -58,7 +60,7 @@ exports.getGuarantorByLoan = async (req, res, next) => {
           proofOfAddress: !!guarantor.proofOfAddressUrl,
           signature: !!guarantor.signatureUrl,
         },
-      },
+      })),
       loan: {
         id: loan._id,
         loanNumber: loan.loanNumber,

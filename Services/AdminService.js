@@ -8,9 +8,10 @@ const { FinancialLedgerService } = require("./FinancialLedgerService");
 const { ReferralService } = require("./ReferralService");
 const { logAudit } = require("../Utilis/auditLogger");
 const AppError = require("../Utilis/AppError");
+const { LOAN_TIERS } = require("../Config/constants");
 
 const defaultSettings = {
-  loanTiers: { firstLoan: 0.7, secondLoan: 1.0, thirdLoan: 1.5 },
+  loanTiers: LOAN_TIERS,
   interestRates: { bronze: 10, silver: 8, gold: 6, platinum: 5 },
   eligibility: { minSavings: 70000, minMonths: 6 },
   withdrawalFee: 100,
@@ -448,6 +449,14 @@ const approveWithdrawal = async (withdrawalId, adminUser = {}, clientIp = "", us
       ipAddress: clientIp,
       userAgent,
     });
+  }
+
+  // SocketScore: a completed withdrawal is verified financial activity and
+  // feeds the Withdrawal Behaviour component (guarded — never fails approval).
+  try {
+    await updateUserScore(completedWithdrawal.userId, "withdrawal_approved");
+  } catch (scoreErr) {
+    console.error(`Withdrawal score update failed for user ${completedWithdrawal.userId}:`, scoreErr?.message || scoreErr);
   }
 
   return {

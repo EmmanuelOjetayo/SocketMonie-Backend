@@ -744,6 +744,14 @@ const handleMembershipFeeWebhook = async (data) => {
   console.log(
     `[MEMBERSHIP WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | user ${user._id} activated + notified + audit logged`
   );
+
+  // SocketScore: membership fee is a verified financial activity — recalc
+  // (guarded so a scoring failure can never fail an already-settled webhook).
+  try {
+    await updateUserScore(user._id, "membership_fee_paid");
+  } catch (scoreErr) {
+    console.error(`Membership score update failed for user ${user._id}:`, scoreErr?.message || scoreErr);
+  }
 };
 
 const handleMinuteWebhook = async (data) => {
@@ -1045,6 +1053,14 @@ const handleMinuteWebhook = async (data) => {
       resolvedVia: pendingPayment ? "reference-record" : "fallback-chain",
     },
   });
+
+  // SocketScore: minutes payment is verified financial activity — recalc
+  // (guarded so a scoring failure can never fail an already-settled webhook).
+  try {
+    await updateUserScore(userId, "minutes_paid");
+  } catch (scoreErr) {
+    console.error(`Minutes score update failed for user ${userId}:`, scoreErr?.message || scoreErr);
+  }
 };
 
 const processWebhook = async (rawBody, signature, event) => {

@@ -992,7 +992,7 @@ const initializeLoanRepayment = async ({ userId, userEmail, userName, userPhone,
   const loan = await LoanRepository.findOne({
     _id: loanId,
     userId,
-    status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days"] },
+    status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
   });
 
   if (!loan) throw new AppError("No payable loan found.", 404);
@@ -1104,7 +1104,7 @@ const verifyLoanRepayment = async ({ userId, loanId, reference, tx_ref, transact
   const loan = await LoanRepository.findOne({
     _id: loanId,
     userId,
-    status: { $in: ["active", "warning_30_days"] },
+    status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
   });
   if (!loan) throw new AppError("Loan not found.", 404);
 

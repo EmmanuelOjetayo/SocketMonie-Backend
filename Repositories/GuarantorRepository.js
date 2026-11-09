@@ -15,7 +15,7 @@ const GuarantorRepository = {
     return query;
   },
 
-  findByLoan: (loanId) => Guarantor.findOne({ loanId }),
+  findByLoan: (loanId) => Guarantor.find({ loanId, isReplaced: false }),
 
   findByToken: (token) =>
     Guarantor.findOne({ verificationToken: token })

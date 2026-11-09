@@ -70,9 +70,9 @@ const getByLoan = async (loanId, userId, role) => {
   if (loan.userId.toString() !== userId.toString() && !["super_admin", "finance_manager"].includes(role)) {
     throw new AppError("Unauthorized.", 403);
   }
-  const guarantor = await GuarantorRepository.findByLoan(loan._id);
-  if (!guarantor) throw new AppError("No guarantor request found.", 404);
-  return { guarantor, loan };
+  const guarantors = await GuarantorRepository.findByLoan(loan._id);
+  if (!guarantors || !guarantors.length) throw new AppError("No guarantor requests found.", 404);
+  return { guarantors, loan };
 };
 
 const getSummaryStats = async (userId) => {

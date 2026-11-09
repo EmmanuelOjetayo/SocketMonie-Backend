@@ -434,6 +434,13 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
       metadata: { source: "verifyMembershipFee" },
     });
 
+    // SocketScore: membership fee is verified financial activity.
+    try {
+      await updateUserScore(userId, "membership_fee_paid");
+    } catch (scoreErr) {
+      console.error(`Membership score update failed for user ${userId}:`, scoreErr?.message || scoreErr);
+    }
+
     return {
       alreadyPaid: false,
       membershipFeePaid: true,

@@ -66,6 +66,9 @@ const savingsSchema = new mongoose.Schema(
     rejectionReason: { type: String, default: null },
     approvedAt: { type: Date, default: null },
     rejectedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    totalDeducted: { type: Number, default: null },
+    payoutFailedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
