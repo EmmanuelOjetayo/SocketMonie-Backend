@@ -622,7 +622,7 @@ exports.verifyMinutes = async (
 
     /**
      * -----------------------------------------------------
-     * 0. IDEMPOTENCY GUARD (fix 3)
+     * 0. IDEMPOTENCY GUARD (fix 3 — corrected collection/category)
      *
      * Reference: CAMP/GLS pattern —
      *   `$or: [{ reference: txRef }, { transactionId }]` checked
@@ -631,14 +631,17 @@ exports.verifyMinutes = async (
      *   webhook), the second caller gets "already processed"
      *   WITHOUT re-running settlement. The in-transaction
      *   re-fetch below remains the second layer of defence.
+     *   We query the Minutes collection (category: monthly_contribution)
+     *   because that is where completed minutes obligations live,
+     *   not the Savings collection.
      * -----------------------------------------------------
      */
-    const duplicateGuard = await Savings.findOne({
+    const duplicateGuard = await Minutes.findOne({
       $or: [
         ...(ref ? [{ reference: ref }] : []),
         ...(txId ? [{ transactionId: String(txId) }] : []),
       ],
-      category: "minutes_payment",
+      category: "monthly_contribution",
       status: "completed",
     }).lean();
 
