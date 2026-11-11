@@ -1,277 +1,378 @@
 const PDFDocument = require("pdfkit");
-const Savings = require("../Models/SavingsModel");
-const Loan = require("../Models/LoanModel");
+const MemberStatementService = require("../Services/MemberStatementService");
 
-// Helper: Calculate growth percentage
-const calculateGrowthRate = (current, previous) => {
-  if (previous === 0) return current > 0 ? 100 : 0;
-  return (((current - previous) / previous) * 100).toFixed(1);
-};
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 
-// GET /api/reports/monthly?month=7&year=2026
+/* ------------------------------------------------------------------ */
+/* GET /api/reports/monthly?month=7&year=2026                          */
+/* ------------------------------------------------------------------ */
 const getMonthlyReport = async (req, res, next) => {
   try {
-    const userId = req.user._id;
     const month = parseInt(req.query.month) || new Date().getMonth() + 1;
     const year = parseInt(req.query.year) || new Date().getFullYear();
 
-    // 1. Date Ranges for current month (UTC boundaries for consistent reporting)
-    const startOfMonth = new Date(Date.UTC(year, month - 1, 1));
-    const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
-
-    // Date Ranges for previous month (UTC boundaries)
-    const startOfPrevMonth = new Date(Date.UTC(year, month - 2, 1));
-    const endOfPrevMonth = new Date(Date.UTC(year, month - 1, 0, 23, 59, 59, 999));
-
-    // 2. Fetch Current Month Savings
-    const currentMonthSavings = await Savings.find({
-      userId,
-      status: "completed",
-      type: "deposit",
-      createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-    });
-    const currentTotalSaved = currentMonthSavings.reduce((sum, t) => sum + t.amount, 0);
-
-    // 3. Fetch Previous Month Savings for Growth Rate
-    const prevMonthSavings = await Savings.find({
-      userId,
-      status: "completed",
-      type: "deposit",
-      createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth },
-    });
-    const prevTotalSaved = prevMonthSavings.reduce((sum, t) => sum + t.amount, 0);
-
-    const growthRate = calculateGrowthRate(currentTotalSaved, prevTotalSaved);
-
-    // 4. Fetch Real Outstanding Loans (all undisbursed-complete statuses —
-    // "defaulted" is not a valid LoanModel status; use the real escalation chain).
-    const activeLoans = await Loan.find({
-      userId,
-      status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
-    });
-    const outstandingLoanBalance = activeLoans.reduce(
-      (sum, loan) => sum + (loan.remainingBalance || 0),
-      0
+    const statement = await MemberStatementService.buildMonthlyStatement(
+      req.user,
+      month,
+      year
     );
 
-    return res.status(200).json({
-      success: true,
-      statement: {
-        period: { month, year },
-        savings: {
-          totalSaved: currentTotalSaved,
-          growthRate: Number(growthRate),
-        },
-        loans: {
-          outstandingBalance: outstandingLoanBalance,
-          activeLoansCount: activeLoans.length,
-        },
-        rating: {
-          current: req.user.socketScore ?? 0,
-          tier: req.user.tier || "Unassigned",
-        },
-      },
-    });
+    return res.status(200).json({ success: true, statement });
   } catch (error) {
     next(error);
   }
 };
 
-// GET /api/reports/download-pdf?month=7&year=2026
+/* ------------------------------------------------------------------ */
+/* GET /api/reports/download-pdf?month=7&year=2026                     */
+/* ------------------------------------------------------------------ */
+
+const PDF_LAYOUT = {
+  margin: 40,
+  tableColumns: [
+    { key: "date", label: "DATE", x: 50, width: 58 },
+    { key: "description", label: "DESCRIPTION", x: 112, width: 118 },
+    { key: "reference", label: "REFERENCE", x: 234, width: 104 },
+    { key: "method", label: "METHOD", x: 342, width: 58 },
+    { key: "status", label: "STATUS", x: 404, width: 52 },
+    { key: "amount", label: "AMOUNT (NGN)", x: 460, width: 85, align: "right" },
+  ],
+};
+
+const naira = (value) =>
+  Number(value || 0).toLocaleString("en-NG", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+const shortDate = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? "—"
+    : d.toISOString().split("T")[0];
+};
+
+/**
+ * Renders the branded header + member info block. Returns the y position
+ * where the caller can continue drawing.
+ */
+const drawPageChrome = (doc, user, period, pageNumber) => {
+  const brandBlue = "#2563eb";
+  const pageWidth = doc.page.width;
+  const pageHeight = doc.page.height;
+
+  if (pageNumber > 1) doc.addPage();
+
+  // Outer border
+  doc
+    .rect(20, 20, pageWidth - 40, pageHeight - 40)
+    .lineWidth(1.5)
+    .stroke(brandBlue);
+
+  // Header bar
+  doc.rect(20, 20, pageWidth - 40, 65).fill(brandBlue);
+
+  doc
+    .fillColor("#ffffff")
+    .fontSize(20)
+    .font("Helvetica-Bold")
+    .text("SocketMoni", 40, 32)
+    .fontSize(9)
+    .font("Helvetica")
+    .text("OFFICIAL MONTHLY FINANCIAL STATEMENT", 40, 56);
+
+  // Right side of the header bar
+  doc
+    .fontSize(9)
+    .text(
+      `Page ${pageNumber}`,
+      pageWidth - 110,
+      40,
+      { width: 70, align: "right" }
+    );
+
+  // User info block (page 1 only)
+  if (pageNumber === 1) {
+    doc
+      .fillColor("#1e293b")
+      .fontSize(10)
+      .font("Helvetica-Bold")
+      .text("Account Name: ", 40, 100, { continued: true })
+      .font("Helvetica")
+      .text(user.fullName || user.name || "Valued Member")
+      .font("Helvetica-Bold")
+      .text("Email Address: ", { continued: true })
+      .font("Helvetica")
+      .text(user.email || "—")
+      .font("Helvetica-Bold")
+      .text("Statement Period: ", { continued: true })
+      .font("Helvetica")
+      .text(`${MONTH_NAMES[period.month - 1]} ${period.year}`)
+      .font("Helvetica-Bold")
+      .text("Generated Date: ", { continued: true })
+      .font("Helvetica")
+      .text(new Date().toISOString().split("T")[0]);
+    return 175;
+  }
+  return 110;
+};
+
+const drawSummaryCards = (doc, statement, y) => {
+  const brandBlue = "#2563eb";
+  const darkText = "#1e293b";
+  const mutedText = "#64748b";
+  const bgLight = "#f8fafc";
+  const { savings, loans, rating } = statement;
+
+  // Card 1: Total saved & growth
+  doc.roundedRect(40, y, 240, 70, 6).fillAndStroke(bgLight, brandBlue);
+  doc
+    .fillColor(mutedText)
+    .fontSize(8)
+    .font("Helvetica")
+    .text("TOTAL SAVED THIS MONTH", 52, y + 10)
+    .fillColor(brandBlue)
+    .fontSize(14)
+    .font("Helvetica-Bold")
+    .text(`NGN ${naira(savings.totalSaved)}`, 52, y + 23)
+    .fillColor(savings.growthRate >= 0 ? "#16a34a" : "#dc2626")
+    .fontSize(9)
+    .font("Helvetica")
+    .text(
+      `${savings.growthRate >= 0 ? "+" : ""}${savings.growthRate}% growth vs prev. month`,
+      52,
+      y + 45
+    );
+
+  // Card 2: Loan balance
+  doc.roundedRect(295, y, 240, 70, 6).fillAndStroke(bgLight, brandBlue);
+  doc
+    .fillColor(mutedText)
+    .fontSize(8)
+    .font("Helvetica")
+    .text("OUTSTANDING LOAN BALANCE", 307, y + 10)
+    .fillColor(loans.outstandingBalance > 0 ? "#dc2626" : darkText)
+    .fontSize(14)
+    .font("Helvetica-Bold")
+    .text(`NGN ${naira(loans.outstandingBalance)}`, 307, y + 23)
+    .fillColor(mutedText)
+    .fontSize(9)
+    .font("Helvetica")
+    .text(`Active Loans: ${loans.activeLoansCount}`, 307, y + 45);
+
+  // Card 3: Deposits / withdrawals / net
+  const y3 = y + 80;
+  doc.roundedRect(40, y3, 240, 70, 6).fillAndStroke(bgLight, brandBlue);
+  doc
+    .fillColor(mutedText)
+    .fontSize(8)
+    .font("Helvetica")
+    .text("DEPOSITS / WITHDRAWALS", 52, y3 + 10)
+    .fillColor("#16a34a")
+    .fontSize(11)
+    .font("Helvetica-Bold")
+    .text(`Deposits: NGN ${naira(savings.totalDeposits)}`, 52, y3 + 23)
+    .fillColor("#dc2626")
+    .text(`Withdrawals: NGN ${naira(savings.totalWithdrawals)}`, 52, y3 + 41)
+    .fillColor(darkText)
+    .text(`Net: NGN ${naira(savings.netGrowth)}`, 52, y3 + 59);
+
+  // Card 4: Socket score
+  doc.roundedRect(295, y3, 240, 70, 6).fillAndStroke(bgLight, brandBlue);
+  doc
+    .fillColor(darkText)
+    .fontSize(8)
+    .font("Helvetica")
+    .text("SOCKET SCORE RATING", 307, y3 + 10)
+    .fillColor(brandBlue)
+    .fontSize(14)
+    .font("Helvetica-Bold")
+    .text(`${rating.current}/100`, 307, y3 + 23)
+    .fillColor(mutedText)
+    .fontSize(9)
+    .font("Helvetica")
+    .text(
+      `Tier: ${rating.tier} | Prev. month: ${rating.previous ?? "—"}`,
+      307,
+      y3 + 45
+    );
+
+  return y3 + 85;
+};
+
 const downloadPdfStatement = async (req, res, next) => {
   try {
     const month = parseInt(req.query.month) || new Date().getMonth() + 1;
     const year = parseInt(req.query.year) || new Date().getFullYear();
     const user = req.user;
 
-    const startOfMonth = new Date(Date.UTC(year, month - 1, 1));
-    const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
-
-    const startOfPrevMonth = new Date(Date.UTC(year, month - 2, 1));
-    const endOfPrevMonth = new Date(Date.UTC(year, month - 1, 0, 23, 59, 59, 999));
-
-    // 1. Fetch live filtered savings records
-    const savings = await Savings.find({
-      userId: user._id,
-      status: "completed",
-      createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-    }).sort({ createdAt: -1 });
-
-    const totalSaved = savings
-      .filter((s) => s.type === "deposit")
-      .reduce((acc, curr) => acc + curr.amount, 0);
-
-    // Previous month total for growth calculation
-    const prevSavings = await Savings.find({
-      userId: user._id,
-      status: "completed",
-      type: "deposit",
-      createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth },
-    });
-    const prevTotal = prevSavings.reduce((acc, curr) => acc + curr.amount, 0);
-    const growthRate = calculateGrowthRate(totalSaved, prevTotal);
-
-    // 2. Fetch Real Outstanding Loan Balance (valid escalation statuses only)
-    const activeLoans = await Loan.find({
-      userId: user._id,
-      status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
-    });
-    const outstandingLoan = activeLoans.reduce(
-      (sum, loan) => sum + (loan.remainingBalance || 0),
-      0
+    // Same statement the JSON endpoint serves — one source of truth.
+    const statement = await MemberStatementService.buildMonthlyStatement(
+      user,
+      month,
+      year
     );
 
-    const currentScore = user.socketScore ?? 0;
-
-    // 3. Response Headers
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=SocketMoni_Statement_${month}_${year}.pdf`
+      `attachment; filename=SocketMoni_Statement_${MONTH_NAMES[month - 1]}_${year}.pdf`
     );
 
-    // 4. Initialize PDF Stream
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    // bufferPages: keep pages in memory so footers + "Page X of Y" can be
+    // stamped on every page just before the stream ends.
+    const doc = new PDFDocument({ margin: 40, size: "A4", bufferPages: true });
     doc.pipe(res);
 
     const brandBlue = "#2563eb";
     const darkText = "#1e293b";
     const mutedText = "#64748b";
-    const bgLight = "#f8fafc";
+    const cols = PDF_LAYOUT.tableColumns;
+    const pageBottom = doc.page.height - 70; // footer band clearance
 
-    // --- OUTER BORDER ---
-    doc.rect(20, 20, 555, 802).lineWidth(1.5).stroke(brandBlue);
+    let pageNumber = 1;
+    let y = drawPageChrome(doc, user, statement.period, pageNumber);
+    y = drawSummaryCards(doc, statement, y);
 
-    // --- HEADER BAR ---
-    doc.rect(20, 20, 555, 65).fill(brandBlue);
+    const drawTableHeader = (yPos) => {
+      doc.rect(40, yPos, 515, 22).fill(brandBlue);
+      doc.fillColor("#ffffff").fontSize(8).font("Helvetica");
+      cols.forEach((c) => {
+        doc.text(c.label, c.x, yPos + 7, {
+          width: c.width,
+          align: c.align || "left",
+        });
+      });
+      return yPos + 26;
+    };
 
-    doc
-      .fillColor("#ffffff")
-      .fontSize(20)
-      .text("SocketMoni", 40, 32, { bold: true })
-      .fontSize(9)
-      .text("OFFICIAL MONTHLY FINANCIAL STATEMENT", 40, 56);
-
-    // --- USER INFO ---
-    doc
-      .fillColor(darkText)
-      .fontSize(10)
-      .text(`Account Name: `, 40, 100, { continued: true, bold: true })
-      .font("Helvetica")
-      .text(user.fullName || user.name || "Valued Member")
-      .text(`Email Address: `, { continued: true, bold: true })
-      .font("Helvetica")
-      .text(user.email)
-      .text(`Statement Period: `, { continued: true, bold: true })
-      .font("Helvetica")
-      .text(`Month ${month}, ${year}`)
-      .text(`Generated Date: `, { continued: true, bold: true })
-      .font("Helvetica")
-      .text(new Date().toISOString().split("T")[0]);
-
-    // --- SUMMARY CARDS ---
-    
-    // Card 1: Total Saved & Growth
-    doc.roundedRect(40, 170, 240, 70, 6).fillAndStroke(bgLight, brandBlue);
-
-    doc
-      .fillColor(mutedText)
-      .fontSize(8)
-      .text("TOTAL SAVED THIS MONTH", 52, 180)
-      .fillColor(brandBlue)
-      .fontSize(14)
-      .text(`NGN ${totalSaved.toLocaleString()}`, 52, 193, { bold: true })
-      .fillColor(growthRate >= 0 ? "#16a34a" : "#dc2626")
-      .fontSize(9)
-      .text(`${growthRate >= 0 ? "+" : ""}${growthRate}% growth vs prev. month`, 52, 215);
-
-    // Card 2: Loan Balance
-    doc.roundedRect(295, 170, 240, 70, 6).fillAndStroke(bgLight, brandBlue);
-
-    doc
-      .fillColor(mutedText)
-      .fontSize(8)
-      .text("OUTSTANDING LOAN BALANCE", 307, 180)
-      .fillColor(outstandingLoan > 0 ? "#dc2626" : darkText)
-      .fontSize(14)
-      .text(`NGN ${outstandingLoan.toLocaleString()}`, 307, 193, { bold: true })
-      .fillColor(mutedText)
-      .fontSize(9)
-      .text(`Active Loans: ${activeLoans.length}`, 307, 215);
-
-    // Card 3: Socket Score Rating
-    doc.roundedRect(40, 250, 495, 45, 6).fillAndStroke(bgLight, brandBlue);
-
-    doc
-      .fillColor(darkText)
-      .fontSize(11)
-      .text("Socket Score Rating: ", 52, 260, { continued: true, bold: true })
-      .fillColor(brandBlue)
-      .text(`${currentScore}/100`)
-      .fillColor(mutedText)
-      .fontSize(9)
-      .text(`Tier: ${user.tier || "Unassigned"} | Evaluated dynamically based on savings and repayment discipline.`, 52, 276);
-
-    // --- TRANSACTION HISTORY TABLE ---
     doc
       .fillColor(darkText)
       .fontSize(12)
-      .text("Savings & Transaction Breakdown", 40, 312, { bold: true });
+      .font("Helvetica-Bold")
+      .text("Transaction Breakdown", 40, y + 8);
+    y += 24;
 
-    // Table Header Line
-    const tableTop = 330;
-    doc.rect(40, tableTop, 495, 22).fill(brandBlue);
+    y = drawTableHeader(y);
 
-    doc.fillColor("#ffffff").fontSize(8);
-    doc.text("DATE", 50, tableTop + 7, { width: 90 });
-    doc.text("METHOD", 150, tableTop + 7, { width: 100 });
-    doc.text("TYPE", 270, tableTop + 7, { width: 80 });
-    doc.text("STATUS", 360, tableTop + 7, { width: 70 });
-    doc.text("AMOUNT (NGN)", 440, tableTop + 7, { width: 85, align: "right" });
-
-    let y = tableTop + 26;
-
-    if (savings.length === 0) {
+    const rows = statement.transactions || [];
+    if (rows.length === 0) {
       doc
         .fillColor(mutedText)
         .fontSize(9)
+        .font("Helvetica")
         .text("No transaction records found for this period.", 50, y);
-    } else {
-      savings.slice(0, 15).forEach((tx, index) => {
-        if (index % 2 === 0) {
-          doc.rect(40, y - 3, 495, 20).fill("#f1f5f9");
-        }
-
-        doc.fillColor(darkText).fontSize(8);
-        doc.text(new Date(tx.createdAt).toISOString().split("T")[0], 50, y);
-        doc.text(tx.method || "Payment Gateway", 150, y);
-        doc.text((tx.type || "deposit").toUpperCase(), 270, y);
-        doc.text((tx.status || "completed").toUpperCase(), 360, y);
-        doc.text(`${tx.amount.toLocaleString()}`, 440, y, { width: 85, align: "right" });
-
-        doc
-          .moveTo(40, y + 15)
-          .lineTo(535, y + 15)
-          .lineWidth(0.5)
-          .stroke("#cbd5e1");
-
-        y += 22;
-      });
+      y += 20;
     }
 
-    // --- FOOTER ---
-    doc.rect(20, 790, 555, 32).fill(brandBlue);
+    rows.forEach((tx, index) => {
+      // Multi-page: roll over when the footer band gets close.
+      if (y > pageBottom) {
+        pageNumber += 1;
+        y = drawPageChrome(doc, user, statement.period, pageNumber);
+        y = drawTableHeader(y);
+      }
 
+      if (index % 2 === 0) {
+        doc.rect(40, y - 3, 515, 20).fill("#f1f5f9");
+      }
+
+      const isDebit =
+        tx.direction === "debit" ||
+        (tx.type === "savings" && tx.category === "withdrawal");
+
+      const values = {
+        date: shortDate(tx.date || tx.paidAt || tx.createdAt),
+        description: tx.label || tx.category || "Transaction",
+        reference: tx.reference || "—",
+        method: (tx.method || "—").replace(/_/g, " "),
+        status: (tx.status || "completed").toUpperCase(),
+        amount: `${isDebit ? "-" : "+"}${naira(tx.amount)}`,
+      };
+
+      doc.fillColor(darkText).fontSize(7.5).font("Helvetica");
+      cols.forEach((c) => {
+        const text = String(values[c.key]);
+        doc.text(text, c.x, y, {
+          width: c.width,
+          align: c.align || "left",
+          ellipsis: true,
+          lineBreak: false,
+        });
+      });
+
+      doc
+        .moveTo(40, y + 15)
+        .lineTo(555, y + 15)
+        .lineWidth(0.5)
+        .stroke("#cbd5e1");
+
+      y += 22;
+    });
+
+    // --- Totals band (completed money movement only) ----------------
+    if (y > pageBottom - 90) {
+      pageNumber += 1;
+      y = drawPageChrome(doc, user, statement.period, pageNumber);
+    }
+    y += 10;
+    doc.roundedRect(40, y, 515, 60, 6).fillAndStroke("#f8fafc", brandBlue);
+    doc.fillColor(darkText).fontSize(10).font("Helvetica-Bold");
+    doc.text("Period Summary (completed transactions only)", 52, y + 10);
+    doc.fontSize(9).font("Helvetica");
     doc
-      .fillColor("#ffffff")
-      .fontSize(8)
-      .text("Thank you for building your financial future with SocketMoni.", 40, 802, { align: "center" });
+      .fillColor("#16a34a")
+      .text(
+        `Total Deposits: NGN ${naira(savingsOf(rows, "deposit"))}`,
+        52,
+        y + 28
+      )
+      .fillColor("#dc2626")
+      .text(
+        `Total Withdrawals: NGN ${naira(savingsOf(rows, "withdrawal"))}`,
+        52,
+        y + 44
+      );
+
+    // --- Footers on every page, with Page X of Y --------------------
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i += 1) {
+      doc.switchToPage(i);
+      const pageHeight = doc.page.height;
+      doc
+        .rect(20, pageHeight - 52, doc.page.width - 40, 32)
+        .fill(brandBlue);
+      doc
+        .fillColor("#ffffff")
+        .fontSize(8)
+        .font("Helvetica")
+        .text(
+          "Thank you for building your financial future with SocketMoni.",
+          40,
+          pageHeight - 41,
+          { align: "center", width: doc.page.width - 80 }
+        );
+    }
 
     doc.end();
   } catch (error) {
     next(error);
   }
 };
+
+// Completed savings withdrawals total from the unified rows.
+const savingsOf = (rows, category) =>
+  rows
+    .filter(
+      (t) =>
+        t.type === "savings" &&
+        t.category === category &&
+        t.status === "completed"
+    )
+    .reduce((s, t) => s + Number(t.amount || 0), 0);
 
 module.exports = {
   getMonthlyReport,

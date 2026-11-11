@@ -187,6 +187,9 @@ const normalize = (type, row) => {
     category: row.type || type,
     label: labelMap[row.type] || labelMap.default || "Transaction",
     amount,
+    // Withdrawal receipts need the processing fee + total deduction; zero
+    // everywhere else. Legacy rows that never recorded a fee read as 0.
+    fee: Number(row.fee || 0),
     direction: isDebit ? "debit" : "credit",
     status: row.status || "completed",
     reference: row.reference || null,
@@ -235,6 +238,23 @@ const dedupeTransactions = (collected) => {
   return deduped;
 };
 
+/**
+ * Client-side (post-merge) search filter. The unified history is already an
+ * in-memory merge, so searching here keeps parity between dedicated and
+ * legacy rows without an extra index. Matches label, reference and
+ * transactionId case-insensitively.
+ */
+const matchesSearch = (row, search) => {
+  if (!search) return true;
+  const q = String(search).trim().toLowerCase();
+  if (!q) return true;
+  return (
+    String(row.label || "").toLowerCase().includes(q) ||
+    String(row.reference || "").toLowerCase().includes(q) ||
+    String(row.transactionId || "").toLowerCase().includes(q)
+  );
+};
+
 /* ------------------------------------------------------------------ */
 /* Unified list                                                        */
 /* ------------------------------------------------------------------ */
@@ -245,10 +265,11 @@ const dedupeTransactions = (collected) => {
  * @param {number} [opts.month]  1-12
  * @param {number} [opts.year]   e.g. 2026
  * @param {string} [opts.type]   all | savings | minute | membership | loan
+ * @param {string} [opts.search] free-text: label / reference / transactionId
  * @param {number} [opts.page]
  * @param {number} [opts.limit]  default 50, max 100
  */
-const list = async ({ userId, month, year, type = "all", page = 1, limit = 50 }) => {
+const list = async ({ userId, month, year, type = "all", search, page = 1, limit = 50 }) => {
   if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
     return { transactions: [], pagination: { total: 0, page: 1, limit: 50, totalPages: 0 } };
   }
@@ -274,7 +295,7 @@ const list = async ({ userId, month, year, type = "all", page = 1, limit = 50 })
 
   // De-duplicate by reference — dedicated-model records are pushed first,
   // so they win over their legacy twins.
-  const deduped = dedupeTransactions(collected);
+  const deduped = dedupeTransactions(collected).filter((r) => matchesSearch(r, search));
 
   deduped.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -292,8 +313,57 @@ const list = async ({ userId, month, year, type = "all", page = 1, limit = 50 })
   };
 };
 
+/**
+ * Fetch ONE transaction for a member across all sources.
+ *
+ * Used by the transaction-detail screen so a deep link / page refresh
+ * resolves the record from the backend instead of trusting navigation
+ * state. Scoped to the requesting user only — a foreign id is a plain
+ * 404, never another member's record.
+ *
+ * @param {string} userId
+ * @param {string} id  transaction document id
+ * @returns {Promise<Object|null>} normalized transaction row (same shape as list())
+ */
+const getOne = async (userId, id) => {
+  if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) return null;
+  if (!id || !mongoose.Types.ObjectId.isValid(String(id))) return null;
+
+  const oid = new mongoose.Types.ObjectId(String(id));
+
+  // 1) Dedicated transaction models (same priority order as list()).
+  for (const [type, Model] of Object.entries(MODELS)) {
+    const row = await Model.findOne({ _id: oid, userId }).lean();
+    if (row) return normalize(type, row);
+  }
+
+  // 2) Legacy sources (same merge rules as list(); normalize() makes the
+  //    response shape identical whichever source matched).
+  for (const [type, fetcher] of [
+    ["savings", LEGACY.savings],
+    ["minute", LEGACY.minute],
+    ["loan", LEGACY.loan],
+  ]) {
+    const rows = await fetcher(userId);
+    for (const row of rows) {
+      if (String(row._id) === String(id)) return normalize(type, row);
+    }
+  }
+
+  // 3) Legacy membership record (keyed off the user document, not an id we
+  //    can match directly — it only resolves when the caller passes the
+  //    synthetic `legacy_membership_<userId>` id used by list()).
+  const membershipRows = await LEGACY.membership(userId);
+  for (const row of membershipRows) {
+    if (String(row._id) === String(id)) return normalize("membership", row);
+  }
+
+  return null;
+};
+
 module.exports = {
   list,
+  getOne,
   recordSavingsTransaction,
   recordMinuteTransaction,
   recordMembershipTransaction,
@@ -302,5 +372,6 @@ module.exports = {
   buildDateRange,
   normalize,
   dedupeTransactions,
+  matchesSearch,
   MODELS,
 };
