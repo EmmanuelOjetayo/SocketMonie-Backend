@@ -23,6 +23,9 @@ router.post(
 
 router.post("/webhook", paymentController.webhook);
 
+// Authoritative transaction-status polling for success pages (backend = source of truth)
+router.get("/status/:reference", protect, paymentController.getPaymentStatus);
+
 // Bank verification
 router.post(
   "/verify-bank",

@@ -14,6 +14,7 @@ const {
   DeleteUserDraft,
   AcceptTerms,
   UploadProfilePicture,
+  DeleteProfilePicture,
 } = require("../Controllers/UserController");
 
 const  UserValidator = require("../Middleware/UserValidate");
@@ -23,6 +24,7 @@ UserRoutes.get('/me', routeProtect, GetUserInfo);
 UserRoutes.patch("/personal-info", routeProtect, UserValidator.UpdatePersonalInfoValidate, UpdatePersonalInfo);
 UserRoutes.post('/kyc', routeProtect, upload.single('file'), UserValidator.KYCUploadValidate, KYCUpload);
 UserRoutes.post('/profile-picture', routeProtect, avatarUpload.single('file'), UploadProfilePicture);
+UserRoutes.delete('/profile-picture', routeProtect, DeleteProfilePicture);
 UserRoutes.post('/pin', routeProtect, UserValidator.SetPinValidate, SetPin);
 UserRoutes.post('/pin/forgot', UserValidator.ForgotPinValidate, forgotPin);
 UserRoutes.post('/pin/reset', routeProtect, UserValidator.ResetPinValidate, resetPin);

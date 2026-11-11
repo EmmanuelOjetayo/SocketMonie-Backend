@@ -16,6 +16,16 @@ const {
 } = require("./TransactionService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT } = require("../Config/constants");
+const {
+  toCanonicalStatus,
+  typeFromReference,
+  isReconcilableReference,
+} = require("../Utilis/paymentStatus");
+
+const LoanTransaction = require("../Models/LoanTransactionModel");
+const MinuteTransaction = require("../Models/MinuteTransactionModel");
+const MembershipTransaction = require("../Models/MembershipTransactionModel");
+const SavingsTransaction = require("../Models/SavingsTransactionModel");
 
 const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
@@ -1245,7 +1255,113 @@ const PaymentService = {
   reconcilePaymentByReference,
   reconcileDepositByReference,
   verifyBankAccount,
+  getPaymentStatus,
+  toCanonicalStatus,
+  typeFromReference,
+  isReconcilableReference,
   getBanks: async () => (await getBanks()).data,
+};
+
+/**
+ * Authoritative transaction status for the frontend success pages.
+ *
+ * The backend (not the browser redirect) is the source of truth:
+ *   (1) Dedicated transaction records written at settlement (LoanTransaction,
+ *       MinuteTransaction, MembershipTransaction, SavingsTransaction) — these
+ *       exist ONLY after webhook or callback settlement, so their presence is
+ *       itself proof of a confirmed operation.
+ *   (2) Pending operational state (Savings, Minutes, User.membershipFeeTxRef).
+ *   (3) While still pending, an idempotent provider reconciliation is attempted
+ *       ONCE for known server-generated references, so a missed webhook AND a
+ *       user polling this endpoint both converge on the same verified outcome.
+ *       Duplicate credits are impossible: every settlement path is idempotent
+ *       by reference.
+ *
+ * Ownership is enforced: every lookup is scoped to the requesting user, and
+ * cross-account references return 404 (never leak another member's payment).
+ */
+const getPaymentStatus = async (userId, reference) => {
+  const ref = String(reference || "").trim();
+  if (!ref) throw new AppError("Payment reference is required.", 400);
+
+  const own = (doc) => doc && String(doc.userId) === String(userId);
+  const receiptFrom = (doc, type) => ({
+    found: true,
+    reference: ref,
+    type: type || typeFromReference(ref) || "payment",
+    status: toCanonicalStatus(doc.status),
+    amount: Number(doc.amount || 0),
+    method: doc.method || "flutterwave",
+    transactionId: doc.transactionId || null,
+    paidAt: doc.paidAt || doc.createdAt || null,
+    monthsSettled:
+      Array.isArray(doc.metadata?.months) && doc.metadata.months.length
+        ? doc.metadata.months.length
+        : Number(doc.metadata?.monthsCount) || null,
+  });
+
+  // (1) Settled dedicated transaction records (webhook OR callback evidence).
+  const [loanTx, minuteTx, membershipTx, savingsTx] = await Promise.all([
+    LoanTransaction.findOne({ reference: ref, userId }).lean(),
+    MinuteTransaction.findOne({ reference: ref, userId }).lean(),
+    MembershipTransaction.findOne({ reference: ref, userId }).lean(),
+    SavingsTransaction.findOne({ reference: ref, userId }).lean(),
+  ]);
+
+  const settled =
+    (loanTx && receiptFrom(loanTx, "loan_repayment")) ||
+    (minuteTx && receiptFrom(minuteTx, "minute_contribution")) ||
+    (membershipTx && receiptFrom(membershipTx, "membership_fee")) ||
+    (savingsTx && receiptFrom(savingsTx));
+  if (settled && settled.status !== "pending") return settled;
+
+  // (2) Pending operational state, scoped to the requesting user.
+  const [savingsDoc, minutesDoc, memberDoc] = await Promise.all([
+    PaymentRepository.findSavingsByReference(ref),
+    PaymentRepository.findMinutesByReference(ref),
+    PaymentRepository.findUserByMembershipRef(ref),
+  ]);
+
+  const ownsSavings = own(savingsDoc);
+  const ownsMinutes = own(minutesDoc);
+  const ownsMembership = memberDoc && String(memberDoc._id) === String(userId);
+
+  if (!ownsSavings && !ownsMinutes && !ownsMembership && !settled) {
+    // Not found anywhere for this user — never fabricated, never leaked.
+    throw new AppError("Transaction not found for this account.", 404);
+  }
+
+  const current =
+    ownsMinutes
+      ? receiptFrom(minutesDoc, "minute_contribution")
+      : ownsSavings
+        ? receiptFrom(savingsDoc)
+        : ownsMembership
+        ? {
+            found: true,
+            reference: ref,
+            type: "membership_fee",
+            status: memberDoc.membershipFeePaid ? "successful" : "pending",
+            amount: MEMBERSHIP_FEE_AMOUNT,
+            method: "flutterwave",
+            transactionId: null,
+            paidAt: memberDoc.membershipFeePaidAt || null,
+            monthsSettled: null,
+          }
+        : settled;
+
+  // (3) Still pending → one idempotent provider reconciliation pass. Settlement
+  // handlers are idempotent by reference, so replaying a webhook that already
+  // fired (or racing the concurrent callback verify) cannot double credit.
+  const reconcilable = isReconcilableReference(ref);
+  let reconciled = false;
+  if (current.status === "pending" && reconcilable) {
+    const outcome = await reconcilePaymentByReference(ref);
+    reconciled = outcome?.status === "reconciled";
+    if (reconciled) return getPaymentStatus(userId, ref); // re-read after settlement
+  }
+
+  return { ...current, reconciled, lastCheckedAt: new Date().toISOString() };
 };
 
 module.exports = { PaymentService };

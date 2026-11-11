@@ -115,6 +115,25 @@ const UploadProfilePicture = async (req, res) => {
   }
 };
 
+const DeleteProfilePicture = async (req, res) => {
+  try {
+    const response = await UserService.DeleteProfilePictureService(req.user._id);
+    return res.status(200).json({
+      success: true,
+      message: response.alreadyDeleted
+        ? 'No profile picture was set.'
+        : 'Profile picture removed successfully.',
+      data: response,
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : 'Failed to remove profile picture',
+      error: err.statusCode ? undefined : err.message,
+    });
+  }
+};
+
 
 const SetPin = async (req, res) => {
   try {
@@ -217,4 +236,4 @@ const UpdatePersonalInfo = async (req, res) => {
 };
 
 
-module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms, UploadProfilePicture };
+module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms, UploadProfilePicture, DeleteProfilePicture };

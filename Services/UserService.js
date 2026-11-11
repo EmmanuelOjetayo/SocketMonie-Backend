@@ -76,6 +76,50 @@ const UploadProfilePictureService = async (file, reqUserID) => {
   };
 };
 
+/**
+ * Profile-picture deletion (CRUD "D"). Removes the stored Cloudinary asset
+ * (best-effort — a destroyed/missing asset must still clear the account),
+ * then clears avatarUrl/selfieUrl/profilePicturePublicId in one upate.
+ * Re-deleting is idempotent: a no-op when no picture exists.
+ */
+const DeleteProfilePictureService = async (reqUserID) => {
+  const existing = await UserRepository.findUserDetails(reqUserID, { includeSensitive: true });
+  if (!existing) throw new AppError('User account not found', 404);
+
+  const hadPicture = Boolean(existing.profilePicturePublicId || existing.avatarUrl || existing.selfieUrl);
+  if (!hadPicture) {
+    return { avatarUrl: null, selfieUrl: null, user: existing, alreadyDeleted: true };
+  }
+
+  const publicId = existing.profilePicturePublicId || null;
+  const updatedUser = await UserRepository.UpdateDetails(reqUserID, {
+    avatarUrl: null,
+    selfieUrl: null,
+    profilePicturePublicId: null,
+  }, { includeSensitive: true });
+  if (!updatedUser) throw new AppError('User account not found', 404);
+
+  if (publicId) {
+    try {
+      await cloudinary.uploader.destroy(publicId);
+    } catch (destroyErr) {
+      // Asset already gone (404) or transient Cloudinary error — the account
+      // is already cleared, so this is hygiene-only and must never fail the
+      // API call. The Cloudinary folder can also be swept manually.
+      console.error("Profile picture asset destroy failed:", destroyErr?.message || destroyErr);
+    }
+  }
+
+  console.log(`[PROFILE PICTURE] avatar deleted | userId: ${reqUserID} | public_id: ${publicId || "—"}`);
+
+  return {
+    avatarUrl: null,
+    selfieUrl: null,
+    user: updatedUser,
+    alreadyDeleted: false,
+  };
+};
+
 const KYCUploadService = async (reqBody, file, reqUserID) => {
   if (!file?.path) throw new AppError('Uploaded document could not be stored', 400);
 
@@ -272,6 +316,7 @@ const AcceptTermsService = async (reqUserID, termsAccepted, privacyAccepted) => 
 const UserService = {
     UserInfo, KYCUploadService, SetPinService, BankDetailService,
     UploadProfilePictureService,
+    DeleteProfilePictureService,
     ForgotPin, ResetPin, UpdateProfile, UpdatePersonalInfo, AcceptTermsService
 }
 

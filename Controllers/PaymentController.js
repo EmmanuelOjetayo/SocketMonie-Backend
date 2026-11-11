@@ -1,4 +1,5 @@
 const { PaymentService } = require("../Services/PaymentService");
+const { PaymentRepository } = require("../Repositories/PaymentRepository");
 
 exports.initiateDeposit = async (req, res, next) => {
   try {
@@ -104,12 +105,43 @@ exports.verifyDeposit = async (req, res, next) => {
     const result = await PaymentService.verifyDeposit(req.user._id, ref, txId);
 
     if (result.alreadyVerified) {
+      // Re-read the settled record so a verification replay still returns the
+      // authoritative receipt instead of a bare "already verified" flag.
+      const settled = ref
+        ? await PaymentRepository.findSavingsByReference(String(ref).trim())
+        : null;
+      if (settled && String(settled.userId) === String(req.user._id)) {
+        return res.status(200).json({
+          success: true,
+          message: "Already verified",
+          data: {
+            reference: settled.reference,
+            transactionId: settled.transactionId || null,
+            amount: Number(settled.amount || 0),
+            type: settled.type || "deposit",
+            status: "successful",
+            method: settled.method || "flutterwave",
+            paidAt: settled.updatedAt || settled.createdAt || null,
+          },
+        });
+      }
       return res.status(200).json({ success: true, message: "Already verified" });
     }
 
     return res.status(200).json({
       success: true,
       message: "Verified successfully",
+      data: result.savings
+        ? {
+            reference: result.savings.reference || ref,
+            transactionId: result.savings.transactionId || null,
+            amount: Number(result.savings.amount || 0),
+            type: result.savings.type || "deposit",
+            status: "successful",
+            method: result.savings.method || "flutterwave",
+            paidAt: new Date().toISOString(),
+          }
+        : null,
     });
   } catch (err) {
     next(err);
@@ -125,6 +157,24 @@ exports.webhook = async (req, res) => {
   } catch (err) {
     const statusCode = err.statusCode || 500;
     return res.status(statusCode).json({ status: "error", message: err.message });
+  }
+};
+
+/**
+ * Authoritative transaction status for success pages (backend is the source
+ * of truth). Returns the webhook/callback-confirmed outcome for a reference
+ * so neither a browser redirect nor location.state is ever displayed as
+ * proof of payment. While pending, triggers one idempotent provider
+ * reconciliation pass (same handlers the webhook uses) so a missed webhook
+ * settles server-side and the polling page converges on the real result.
+ */
+exports.getPaymentStatus = async (req, res, next) => {
+  try {
+    const { reference } = req.params;
+    const data = await PaymentService.getPaymentStatus(req.user._id, reference);
+    return res.status(200).json({ success: true, data });
+  } catch (err) {
+    next(err);
   }
 };
 
