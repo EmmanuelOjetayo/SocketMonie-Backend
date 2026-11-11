@@ -1291,9 +1291,19 @@ const getPaymentStatus = async (userId, reference) => {
     type: type || typeFromReference(ref) || "payment",
     status: toCanonicalStatus(doc.status),
     amount: Number(doc.amount || 0),
+    // Withdrawal receipts show the processing fee and the total deduction.
+    fee: Number(doc.fee || 0),
     method: doc.method || "flutterwave",
     transactionId: doc.transactionId || null,
     paidAt: doc.paidAt || doc.createdAt || null,
+    // The member's own payout destination (savings withdrawals only).
+    destinationBank: doc.bankDetails
+      ? {
+          bankName: doc.bankDetails.bankName || null,
+          accountName: doc.bankDetails.accountName || null,
+          accountNumber: doc.bankDetails.accountNumber || null,
+        }
+      : null,
     monthsSettled:
       Array.isArray(doc.metadata?.months) && doc.metadata.months.length
         ? doc.metadata.months.length
@@ -1343,9 +1353,11 @@ const getPaymentStatus = async (userId, reference) => {
             type: "membership_fee",
             status: memberDoc.membershipFeePaid ? "successful" : "pending",
             amount: MEMBERSHIP_FEE_AMOUNT,
+            fee: 0,
             method: "flutterwave",
             transactionId: null,
             paidAt: memberDoc.membershipFeePaidAt || null,
+            destinationBank: null,
             monthsSettled: null,
           }
         : settled;

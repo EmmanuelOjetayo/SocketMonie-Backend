@@ -190,6 +190,17 @@ const normalize = (type, row) => {
     // Withdrawal receipts need the processing fee + total deduction; zero
     // everywhere else. Legacy rows that never recorded a fee read as 0.
     fee: Number(row.fee || 0),
+    penaltyFee: Number(row.penaltyFee || 0),
+    totalDeducted:
+      row.totalDeducted != null ? Number(row.totalDeducted) : null,
+    // The member's own payout destination (savings withdrawals only).
+    destinationBank: row.bankDetails
+      ? {
+          bankName: row.bankDetails.bankName || null,
+          accountName: row.bankDetails.accountName || null,
+          accountNumber: row.bankDetails.accountNumber || null,
+        }
+      : null,
     direction: isDebit ? "debit" : "credit",
     status: row.status || "completed",
     reference: row.reference || null,
