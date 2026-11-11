@@ -297,7 +297,12 @@ const requestWithdrawal = async ({ userId, amount, accountNumber, accountName, b
 
   return {
     withdrawalId: withdrawalRequest._id,
+    reference: withdrawalRequest.reference,
     status: withdrawalRequest.status,
+    amount: Number(amount),
+    fee,
+    totalDeducted: Number(amount) + fee,
+    destinationBank: withdrawalRequest.bankDetails,
   };
 };
 
