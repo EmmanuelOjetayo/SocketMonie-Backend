@@ -1248,38 +1248,6 @@ const verifyBankAccount = async (accountNumber, bankCode) => {
   };
 };
 
-const PaymentService = {
-  initiateDeposit,
-  verifyDeposit,
-  processWebhook,
-  reconcilePaymentByReference,
-  reconcileDepositByReference,
-  verifyBankAccount,
-  getPaymentStatus,
-  toCanonicalStatus,
-  typeFromReference,
-  isReconcilableReference,
-  getBanks: async () => (await getBanks()).data,
-};
-
-/**
- * Authoritative transaction status for the frontend success pages.
- *
- * The backend (not the browser redirect) is the source of truth:
- *   (1) Dedicated transaction records written at settlement (LoanTransaction,
- *       MinuteTransaction, MembershipTransaction, SavingsTransaction) — these
- *       exist ONLY after webhook or callback settlement, so their presence is
- *       itself proof of a confirmed operation.
- *   (2) Pending operational state (Savings, Minutes, User.membershipFeeTxRef).
- *   (3) While still pending, an idempotent provider reconciliation is attempted
- *       ONCE for known server-generated references, so a missed webhook AND a
- *       user polling this endpoint both converge on the same verified outcome.
- *       Duplicate credits are impossible: every settlement path is idempotent
- *       by reference.
- *
- * Ownership is enforced: every lookup is scoped to the requesting user, and
- * cross-account references return 404 (never leak another member's payment).
- */
 const getPaymentStatus = async (userId, reference) => {
   const ref = String(reference || "").trim();
   if (!ref) throw new AppError("Payment reference is required.", 400);
@@ -1375,5 +1343,37 @@ const getPaymentStatus = async (userId, reference) => {
 
   return { ...current, reconciled, lastCheckedAt: new Date().toISOString() };
 };
+const PaymentService = {
+  initiateDeposit,
+  verifyDeposit,
+  processWebhook,
+  reconcilePaymentByReference,
+  reconcileDepositByReference,
+  verifyBankAccount,
+  getPaymentStatus,
+  toCanonicalStatus,
+  typeFromReference,
+  isReconcilableReference,
+  getBanks: async () => (await getBanks()).data,
+};
+
+/**
+ * Authoritative transaction status for the frontend success pages.
+ *
+ * The backend (not the browser redirect) is the source of truth:
+ *   (1) Dedicated transaction records written at settlement (LoanTransaction,
+ *       MinuteTransaction, MembershipTransaction, SavingsTransaction) — these
+ *       exist ONLY after webhook or callback settlement, so their presence is
+ *       itself proof of a confirmed operation.
+ *   (2) Pending operational state (Savings, Minutes, User.membershipFeeTxRef).
+ *   (3) While still pending, an idempotent provider reconciliation is attempted
+ *       ONCE for known server-generated references, so a missed webhook AND a
+ *       user polling this endpoint both converge on the same verified outcome.
+ *       Duplicate credits are impossible: every settlement path is idempotent
+ *       by reference.
+ *
+ * Ownership is enforced: every lookup is scoped to the requesting user, and
+ * cross-account references return 404 (never leak another member's payment).
+ */
 
 module.exports = { PaymentService };
