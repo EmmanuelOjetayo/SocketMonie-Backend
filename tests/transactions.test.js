@@ -19,6 +19,7 @@ const {
   buildDateRange,
   normalize,
   dedupeTransactions,
+  matchesSearch,
 } = require("../Services/TransactionService");
 
 let PASS = 0;
@@ -155,6 +156,53 @@ t("keeps rows that have no reference (keyed by type:id)", () => {
   ];
   const out = dedupeTransactions(merged);
   assert.strictEqual(out.length, 2);
+});
+
+console.log("\n=== fee + search ===\n");
+
+t("normalize exposes the stored fee (withdrawal receipts need it)", () => {
+  const tx = normalize("savings", {
+    _id: "h",
+    type: "withdrawal",
+    amount: 5000,
+    fee: 100,
+    status: "completed",
+    reference: "WTH-2",
+  });
+  assert.strictEqual(tx.fee, 100);
+});
+
+t("normalize defaults fee to 0 when the record has none", () => {
+  const tx = normalize("savings", { _id: "i", type: "deposit", amount: 100, status: "completed" });
+  assert.strictEqual(tx.fee, 0);
+});
+
+t("matchesSearch finds a row by reference (case-insensitive)", () => {
+  const row = { label: "Savings Deposit", reference: "DEP-9Z", transactionId: null };
+  assert.strictEqual(matchesSearch(row, "dep-9z"), true);
+  assert.strictEqual(matchesSearch(row, "DEP-9Z"), true);
+});
+
+t("matchesSearch finds a row by label", () => {
+  const row = { label: "SocketMinutes Contribution", reference: "MIN-1", transactionId: null };
+  assert.strictEqual(matchesSearch(row, "socketminutes"), true);
+});
+
+t("matchesSearch finds a row by provider transaction id", () => {
+  const row = { label: "Loan Repayment", reference: "LRP-1", transactionId: "FLW-998877" };
+  assert.strictEqual(matchesSearch(row, "flw-9988"), true);
+});
+
+t("matchesSearch rejects a non-matching query", () => {
+  const row = { label: "Savings Deposit", reference: "DEP-1", transactionId: null };
+  assert.strictEqual(matchesSearch(row, "loan"), false);
+});
+
+t("matchesSearch treats an empty query as match-all", () => {
+  const row = { label: "Savings Deposit", reference: "DEP-1", transactionId: null };
+  assert.strictEqual(matchesSearch(row, ""), true);
+  assert.strictEqual(matchesSearch(row, "   "), true);
+  assert.strictEqual(matchesSearch(row, null), true);
 });
 
 console.log(`\nTransactions tests: ${PASS} passed, ${FAIL} failed, ${PASS + FAIL} total`);
