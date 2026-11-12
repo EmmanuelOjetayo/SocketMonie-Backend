@@ -62,6 +62,7 @@ app.set("trust proxy", 1);
 // ==========================================================================
 
 const allowedOrigins = [
+  "https://socketmonnie-frontend.onrender.com", //current in use
   "https://socketmonnie.netlify.app",
   "https://socketmonnie.onrender.com",
   "http://localhost:5173",
