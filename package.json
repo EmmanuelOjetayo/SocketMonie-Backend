@@ -5,7 +5,10 @@
   "main": "Server/app.js",
   "scripts": {
     "start": "node Server/app.js",
-    "dev": "nodemon Server/app.js"
+    "dev": "nodemon Server/app.js",
+    "start:local": "node start-local.js",
+    "test": "node --test \"tests/*.test.js\"",
+    "test:integration": "node tests/system.integration.js all"
   },
   "keywords": [],
   "author": "",

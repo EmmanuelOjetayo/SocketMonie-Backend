@@ -1,5 +1,5 @@
 const crypto = require("crypto");
-const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const { PaymentRepository } = require("../Repositories/PaymentRepository");
 const { FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID, verifyPayment, verifyTransactionById, verifyAccount, getBanks } = require("../Utilis/Flutterwave");
 const { processLoanRepayment } = require("../Services/LoanService");
@@ -132,7 +132,7 @@ const verifyDeposit = async (userId, ref, transactionId) => {
 
   const settledAmount = Number(data.amount_settled ?? data.amount ?? existingSavings.amount);
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let savings;
   try {
     await session.withTransaction(async () => {
@@ -301,7 +301,7 @@ const handleDepositWebhook = async (data) => {
   }
   const finalSettled = Number(v.amount_settled ?? v.amount ?? settledAmount);
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let savings;
   try {
     await session.withTransaction(async () => {
@@ -396,7 +396,7 @@ const handleWithdrawalWebhook = async (data) => {
 
   if (await PaymentRepository.isTransactionProcessed(transferId, "savings")) return;
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let withdrawal;
   let didProcess = false;
   try {
@@ -926,11 +926,10 @@ const handleMinuteWebhook = async (data) => {
   // Fallback resolution (record missing) budgets from what Flutterwave
   // actually charged, so the member is never over-credited.
   const userId = (pendingPayment?.userId || userIdFallback).toString();
-  const mongoose = require("mongoose");
   const Minutes = require("../Models/MinutesModel");
   const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let settledCount = 0;
   let settledCurrentMonth = false;
   try {

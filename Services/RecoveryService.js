@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const { RecoveryRepository } = require("../Repositories/RecoveryRepository");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
 const AppError = require("../Utilis/AppError");
@@ -24,7 +25,7 @@ const createPaymentIntent = async ({ obligationId, guarantorUserId, amount }) =>
 const listForGuarantor = (guarantorUserId) => RecoveryRepository.findForGuarantorUser(guarantorUserId);
 
 const completePayment = async ({ reference, providerReference = null, callerUserId = null }) => {
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let payment;
   try {
     await session.withTransaction(async () => {

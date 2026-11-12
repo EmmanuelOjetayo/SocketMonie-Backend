@@ -8,10 +8,16 @@ const isWebhook = (req) =>
   req.path === "/payments/webhook" ||
   req.originalUrl?.includes("/payments/webhook");
 
+// Request ceiling per window. Defaults to the production value (50 / 5 min).
+// It is configurable through the environment so non-production runs (local
+// integration suites, staging smoke tests) are not throttled by a limit that
+// exists to protect the public API. Unset in production => unchanged.
+const MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX) || 50;
+
 // Global Limiter: 50 requests per 5 minutes (webhook excluded)
 const globalLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 50,
+  max: MAX_REQUESTS,
   skip: isWebhook,
   message: {
     success: false,
@@ -24,7 +30,7 @@ const globalLimiter = rateLimit({
 // Financial Limiter: 50 requests per 5 minutes (webhook excluded)
 const financialLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 50,
+  max: MAX_REQUESTS,
   skip: isWebhook,
   message: {
     success: false,
@@ -37,7 +43,7 @@ const financialLimiter = rateLimit({
 // Admin Limiter: 50 requests per 5 minutes for admin operations
 const adminLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 50,
+  max: MAX_REQUESTS,
   message: {
     success: false,
     message: "Too many admin operations. Please wait 5 minutes before trying again.",
@@ -46,4 +52,4 @@ const adminLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-module.exports = { globalLimiter, financialLimiter, adminLimiter };
+module.exports = { globalLimiter, financialLimiter, adminLimiter, MAX_REQUESTS };

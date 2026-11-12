@@ -2,6 +2,7 @@ const Savings = require("../Models/SavingsModel");
 const Loan = require("../Models/LoanModel");
 const ScoreHistory = require("../Models/ScoreHistory");
 const TransactionService = require("./TransactionService");
+const AppError = require("../Utilis/AppError");
 
 /**
  * MemberStatementService — the single source of truth for a member's
@@ -100,8 +101,8 @@ const pickScore = (row) => {
 const buildMonthlyStatement = async (user, month, year) => {
   const range = monthRange(year, month);
   if (!range) {
-    const err = new Error("Invalid month or year for statement");
-    err.status = 400;
+    // Input validation errors must surface as 400, not as unhandled 500s.
+    const err = new AppError("Invalid month or year for statement", 400);
     throw err;
   }
 

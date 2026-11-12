@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const { ExpenseRepository } = require("../Repositories/ExpenseRepository");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
 const { CapitalService } = require("./CapitalService");
@@ -6,7 +6,7 @@ const AppError = require("../Utilis/AppError");
 
 const create = async ({ title, amount, category, description, reference, expenseDate, createdBy }) => {
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) throw new AppError("Expense amount must be positive.", 400);
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let expense;
   try {
     await session.withTransaction(async () => {
@@ -49,7 +49,7 @@ const list = async ({ status, category, page = 1, limit = 20 }) => {
 };
 
 const reverse = async ({ expenseId, adminId, reason }) => {
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let expense;
   try {
     await session.withTransaction(async () => {

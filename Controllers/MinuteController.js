@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID, FLW_SECRET_KEY } = require("../Utilis/Flutterwave");
 const User = require("../Models/UserModel");
@@ -602,7 +603,7 @@ exports.verifyMinutes = async (
   res
 ) => {
   const session =
-    await mongoose.startSession();
+    await startSafeSession();
 
   try {
     const {

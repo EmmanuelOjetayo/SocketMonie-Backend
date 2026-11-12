@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const crypto = require("crypto");
 const { LoanRepository } = require("../Repositories/LoanRepository");
 const { InterestCalculationService } = require("./InterestCalculationService");
@@ -266,7 +266,7 @@ const applyForLoan = async ({
     });
   }
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let createdLoan;
   try {
     await session.withTransaction(async () => {
@@ -386,7 +386,7 @@ const applyForLoan = async ({
  * non-replaced guarantors are notified that the request is void.
  */
 const cancelApplication = async ({ userId, loanId, reason }) => {
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let cancelledLoan;
 
   try {
@@ -523,7 +523,7 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
   const tokenExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
   const now = new Date();
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let updatedLoan;
 
   try {
@@ -606,7 +606,7 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
 };
 
 const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let loan;
   let activeGuarantors;
   try {
@@ -766,7 +766,7 @@ const processLoanRepayment = async ({
   paymentReference,
   paymentMethod = "flutterwave",
 }) => {
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let updatedLoan;
   let totalPenalty = 0;
   let wasDuplicate = false;

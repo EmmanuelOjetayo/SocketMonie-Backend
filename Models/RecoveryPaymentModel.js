@@ -7,7 +7,7 @@ const RecoveryPaymentSchema = new mongoose.Schema({
   guarantorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "Users", required: true, index: true },
   amount: { type: Number, required: true, min: 0.01 },
   reference: { type: String, required: true, unique: true, index: true },
-  providerReference: { type: String, default: null, unique: true, sparse: true },
+  providerReference: { type: String, default: null, unique: true, partialFilterExpression: { providerReference: { $type: "string" } } },
   status: { type: String, enum: ["pending", "completed", "failed", "reversed"], default: "pending", index: true },
   paidAt: { type: Date, default: null },
 }, { timestamps: true });

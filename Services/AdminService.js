@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const { AdminRepository } = require("../Repositories/AdminRepository");
 const Loan = require("../Models/LoanModel");
 const User = require("../Models/UserModel");
@@ -333,7 +333,7 @@ const getPendingWithdrawals = async ({ page = 1, limit = 20 }) => {
 };
 
 const approveWithdrawal = async (withdrawalId, adminUser = {}, clientIp = "", userAgent = "") => {
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let completedWithdrawal;
   let totalDeducted = 0;
   let user;

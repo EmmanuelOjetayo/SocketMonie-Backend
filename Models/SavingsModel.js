@@ -43,7 +43,10 @@ const savingsSchema = new mongoose.Schema(
     maturityDate: { type: Date, default: null },
     isLocked: { type: Boolean, default: true },
     
-    reference: { type: String, default: null, unique: true, sparse: true },
+    // Partial unique index: only documents that actually carry a string
+    // value are indexed, so multiple records with no reference may coexist.
+    // (sparse alone does not exclude explicit null values.)
+    reference: { type: String, default: null, unique: true, partialFilterExpression: { reference: { $type: "string" } } },
     // Provider transaction reference (Flutterwave — field name kept
     // for backward compatibility with existing records/queries).
     flutterwaveRef: { type: String, default: null },
@@ -51,7 +54,9 @@ const savingsSchema = new mongoose.Schema(
     // loan repayments. unique+sparse means two documents can never share a
     // real transactionId, even under a race condition — this backs up the
     // application-level "already processed?" checks with a DB-level constraint.
-    transactionId: { type: String, default: null, unique: true, sparse: true },
+    // Partial unique index (see `reference` above): only real transaction ids
+    // are indexed, so multiple records awaiting settlement may coexist.
+    transactionId: { type: String, default: null, unique: true, partialFilterExpression: { transactionId: { $type: "string" } } },
 
     // For withdrawal requests
     bankDetails: {

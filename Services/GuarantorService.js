@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const { GuarantorRepository } = require("../Repositories/GuarantorRepository");
 const { createNotification } = require("../Utilis/notificationHelper");
 const AppError = require("../Utilis/AppError");
@@ -174,7 +174,7 @@ const respondToRequest = async ({ userId, clientIp, body }) => {
     throw new AppError("Guarantor record attached to this loan was not found.", 404);
   }
 
-  const session = await mongoose.startSession();
+  const session = await startSafeSession();
   let allGuarantorsAccepted = false;
 
   try {

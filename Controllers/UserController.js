@@ -63,7 +63,6 @@ const AcceptTerms = async (req, res) => {
 const GetUserInfo = async (req, res) => {
   try {
     const userObj = await UserService.UserInfo(req.user._id)
-    console.log("userObj", userObj);
 
     if (!userObj) {
     return res.status(404).json({

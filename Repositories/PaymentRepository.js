@@ -25,7 +25,14 @@ const PaymentRepository = {
     ),
 
   findWithdrawalByReference: (reference, session = null) => {
-    const query = Savings.findOne({ reference, type: "withdrawal", status: "pending" });
+    // A payout event may only settle an ADMIN-APPROVED withdrawal that is
+    // still awaiting payout confirmation ("approved"). The previous filter
+    // ("pending") could never match a withdrawal record — withdrawals live in
+    // pending_approval / approved / completed / failed / rejected — so payout
+    // webhooks were silently dropped and the withdrawal never settled.
+    // Matching "approved" also keeps the business rule intact: a payout
+    // event can never settle a request that no admin approved.
+    const query = Savings.findOne({ reference, type: "withdrawal", status: "approved" });
     if (session) query.session(session);
     return query;
   },

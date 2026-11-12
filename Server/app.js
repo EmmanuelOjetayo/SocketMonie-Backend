@@ -182,10 +182,26 @@ app.use(csrfProtect);
 app.use(globalLimiter);
 
 app.post("/_debug/reset-ratelimit", (req, res) => {
-  globalLimiter.store && globalLimiter.store.reset
-    ? globalLimiter.store.reset()
-    : globalLimiter.store && globalLimiter.store.clear();
-  res.json({ success: true, message: "Rate limiter reset" });
+  // express-rate-limit v8 keeps its store private and exposes `resetKey()`
+  // on the limiter instance. The previous implementation called
+  // `limiter.store.reset()`, which does not exist on v8 — so this endpoint
+  // answered "success" while clearing nothing, leaving callers throttled.
+  // The key is `req.ip`, which is exactly what the default key generator
+  // uses for the request being reset.
+  const key = req.ip;
+  const limiters = [globalLimiter, financialLimiter, adminLimiter];
+  const reset = limiters.map((limiter) => {
+    try {
+      if (typeof limiter.resetKey === "function") {
+        limiter.resetKey(key);
+        return true;
+      }
+    } catch (_) {
+      /* limiter without a resettable key — skip */
+    }
+    return false;
+  });
+  res.json({ success: true, message: "Rate limiter reset", key, reset });
 });
 
 // Financial endpoints limiter

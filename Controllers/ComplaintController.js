@@ -9,7 +9,7 @@ exports.getMyComplaints = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-exports.submitComplaint = async (req, res) => {
+exports.submitComplaint = async (req, res, next) => {
   try {
     const { subject, message, category } = req.body;
     if (!subject || !message) {
@@ -37,6 +37,6 @@ exports.submitComplaint = async (req, res) => {
     return res.status(201).json({ success: true, message: "Complaint submitted successfully.", ticketId, complaint });
   } catch (err) {
     console.error("❌ submitComplaint error:", err.message);
-    return res.status(500).json({ success: false, message: "Internal Server Error" });
+    return next(err);
   }
 };

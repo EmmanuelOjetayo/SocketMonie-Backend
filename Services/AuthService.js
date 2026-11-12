@@ -1,6 +1,6 @@
 const { AuthRepository } = require("../Repositories/AuthRepository")
 const { ReferralRepository } = require("../Repositories/ReferralRepository")
-const mongoose = require("mongoose")
+const { startSafeSession } = require("../Utilis/transactionRunner");
 const bcrypt = require("bcrypt")
 const crypto = require("crypto")
 const genJWT = require("../Utilis/genJWT")
@@ -60,7 +60,7 @@ const RegisterService = async(userData)=>{
 
         const hashedOTP = await bcrypt.hash(otp, 12);
 
-        const session = await mongoose.startSession();
+        const session = await startSafeSession();
         let newUser;
         try {
           await session.withTransaction(async () => {
