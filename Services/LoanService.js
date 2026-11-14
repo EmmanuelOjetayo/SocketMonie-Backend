@@ -252,9 +252,9 @@ const applyForLoan = async ({
       throw new AppError(`${guarantor.fullName} does not meet the minimum savings requirement of ₦${GUARANTOR_MIN_SAVINGS.toLocaleString()}.`, 400);
     }
 
-    if (gNetSavings <= requiredGuarantorSavings) {
+    if (gNetSavings < requiredGuarantorSavings) {
       throw new AppError(
-        `${guarantor.fullName}'s savings (₦${gNetSavings.toLocaleString()}) must be greater than 25% of the loan amount (₦${requiredGuarantorSavings.toLocaleString()}).`,
+        `${guarantor.fullName}'s savings (₦${gNetSavings.toLocaleString()}) must be at least 25% of the loan amount (₦${requiredGuarantorSavings.toLocaleString()}).`,
         400
       );
     }
@@ -502,9 +502,9 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
   }
 
   const requiredGuarantorSavings = loan.principalAmount * 0.25;
-  if (gNetSavings <= requiredGuarantorSavings) {
+  if (gNetSavings < requiredGuarantorSavings) {
     throw new AppError(
-      `${newGuarantorUser.fullName}'s savings (₦${gNetSavings.toLocaleString()}) must be greater than 25% of the loan amount (₦${requiredGuarantorSavings.toLocaleString()}).`,
+      `${newGuarantorUser.fullName}'s savings (₦${gNetSavings.toLocaleString()}) must be at least 25% of the loan amount (₦${requiredGuarantorSavings.toLocaleString()}).`,
       400
     );
   }
@@ -605,54 +605,18 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
   return updatedLoan;
 };
 
-const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
-  const session = await startSafeSession();
-  let loan;
-  let activeGuarantors;
-  try {
-    await session.withTransaction(async () => {
-      loan = await LoanRepository.findById(loanId, session);
-      if (!loan) throw new AppError("Loan not found.", 404);
-
-      if (loan.status !== "pending_review") {
-        throw new AppError("Loan is not awaiting admin approval.", 400);
-      }
-
-      // Separation of duties (P1-002): the approving admin must have no
-      // personal stake in the loan.
-      if (adminUser?._id && String(loan.userId) === String(adminUser._id)) {
-        throw new AppError("You cannot approve your own loan application.", 403);
-      }
-
-      activeGuarantors = loan.guarantors?.filter((g) => !g.isReplaced) || [];
-      if (activeGuarantors.length !== 4 || !activeGuarantors.every((g) => g.status === "accepted")) {
-        throw new AppError("All 4 guarantors must accept this loan before approval.", 400);
-      }
-      if (
-        adminUser?._id &&
-        activeGuarantors.some(
-          (g) => g.userId && String(g.userId) === String(adminUser._id)
-        )
-      ) {
-        throw new AppError("You cannot approve a loan in which you are a guarantor.", 403);
-      }
-
-      const disbursementAmount = loan.principalAmount - loan.interestAmount;
-      const disbursedAt = new Date();
-      const installmentAmount = Math.floor(loan.totalRepayable / loan.durationMonths);
-      const installments = [];
-      let allocated = 0;
-
-      for (let i = 1; i <= loan.durationMonths; i++) {
+const buildLoanInstallments = (loan, disbursedAt = new Date()) => {
+  const installmentAmount = Math.floor(loan.totalRepayable / loan.durationMonths);
+  const installments = [];
+  let allocated = 0;
+  for (let i = 1; i <= loan.durationMonths; i++) {
     let amountDue = installmentAmount;
     if (i === loan.durationMonths) {
       amountDue = loan.totalRepayable - allocated;
     }
     allocated += amountDue;
-
     const dueDate = new Date(disbursedAt);
     dueDate.setMonth(dueDate.getMonth() + i);
-
     installments.push({
       installmentNumber: i,
       dueDate,
@@ -661,56 +625,126 @@ const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
       status: "unpaid",
       penaltyApplied: false,
     });
+  }
+  return installments;
+};
+
+const finalizeManualLoanDisbursement = async ({ loanId, adminUser }) => {
+  const session = await startSafeSession();
+  let loan;
+  let guarantorUserIds = [];
+  try {
+    await session.withTransaction(async () => {
+      loan = await LoanRepository.findById(loanId, session);
+      if (!loan) throw new AppError("Loan not found.", 404);
+
+      if (loan.status === "active" && loan.payoutStatus === "completed") {
+        guarantorUserIds = (loan.guarantors || []).filter((g) => !g.isReplaced).map((g) => g.userId);
+        return;
+      }
+      if (loan.status !== "pending_review") {
+        throw new AppError("Loan is not awaiting admin approval.", 400);
       }
 
+      // Separation of duties
+      if (adminUser?._id && String(loan.userId) === String(adminUser._id)) {
+        throw new AppError("You cannot approve your own loan application.", 403);
+      }
+
+      const activeGuarantors = (loan.guarantors || []).filter((g) => !g.isReplaced);
+      if (activeGuarantors.length !== 4 || !activeGuarantors.every((g) => g.status === "accepted")) {
+        throw new AppError("All 4 guarantors must accept this loan before approval.", 400);
+      }
+      if (
+        adminUser?._id &&
+        activeGuarantors.some((g) => g.userId && String(g.userId) === String(adminUser._id))
+      ) {
+        throw new AppError("You cannot approve a loan in which you are a guarantor.", 403);
+      }
+
+      // Borrower's profile bank details are authoritative for admin review/manual payment.
+      const borrower = await LoanRepository.findUserById(loan.userId);
+      if (!borrower) throw new AppError("Borrower account not found.", 404);
+      const bank = borrower.bankDetails || {};
+      const bankCode = String(bank.bankCode || "").trim();
+      const accountNumber = String(bank.accountNumber || "").replace(/\s+/g, "").trim();
+      const accountName = String(bank.accountName || "").trim();
+      if (!bankCode || !accountNumber) {
+        throw new AppError("Borrower bank details are incomplete in profile. Update the member's bank details before confirming manual disbursement.", 400);
+      }
+      if (!/^\d{10}$/.test(accountNumber)) {
+        throw new AppError("Borrower bank account number is invalid. A verified 10-digit account number is required before confirming manual disbursement.", 400);
+      }
+
+      const disbursementAmount = Number(loan.principalAmount) - Number(loan.interestAmount || 0);
+      if (!Number.isFinite(disbursementAmount) || disbursementAmount <= 0) {
+        throw new AppError("Invalid disbursement amount.", 400);
+      }
+      if (Math.round(disbursementAmount + Number(loan.interestAmount || 0)) !== Math.round(Number(loan.principalAmount || 0))) {
+        throw new AppError("Loan financial values are inconsistent. Disbursement cannot proceed.", 400);
+      }
+
+      const disbursedAt = new Date();
+      const manualReference = loan.payoutReference || `MANUAL_${loan.loanNumber || loan._id}_${Date.now()}`;
+
       loan.status = "active";
-  loan.disbursementAmount = disbursementAmount;
-  loan.disbursedAt = disbursedAt;
-  loan.approvedAt = new Date();
-  loan.reviewedAt = new Date();
-  loan.approvedBy = adminUser._id;
-  // Accountability (owner decision #5): record the admin who triggered the
-  // disbursement (the approval action is the human disbursement trigger,
-  // so it is recorded even when approving admin == disbursing admin).
-  loan.disbursedBy = adminUser._id || loan.approvedBy;
-  loan.payoutStatus = "completed";
-  loan.payoutReference = `PAYOUT-${Date.now()}`;
-  loan.installments = installments;
-  loan.amountPaid = 0;
-  loan.remainingBalance = loan.totalRepayable;
+      loan.approvedAt = loan.approvedAt || disbursedAt;
+      loan.reviewedAt = disbursedAt;
+      loan.approvedBy = adminUser._id;
+      loan.disbursedBy = adminUser._id;
+      loan.disbursedAt = disbursedAt;
+      loan.disbursementAmount = disbursementAmount;
+      loan.payoutStatus = "completed";
+      loan.payoutReference = manualReference;
+      loan.payoutRef = manualReference; // manual confirmation reference (not an external provider transfer id)
+      loan.payoutInitiatedAt = null;
+      loan.payoutFailedAt = null;
+      loan.payoutFailureReason = null;
+      loan.payoutProviderResponse = { mode: "manual", confirmedBy: adminUser._id, confirmedAt: disbursedAt };
+      loan.disbursementBankDetails = {
+        bankCode,
+        bankName: bank.bankName || null,
+        accountNumber,
+        accountName: accountName || borrower.fullName || null,
+      };
+      loan.installments = buildLoanInstallments(loan, disbursedAt);
+      loan.amountPaid = loan.amountPaid || 0;
+      loan.remainingBalance = loan.totalRepayable;
 
       activeGuarantors.forEach((g) => {
-    g.status = "active";
-    g.remainingGuaranteedBalance = loan.remainingBalance || loan.totalRepayable;
+        g.status = "active";
+        g.remainingGuaranteedBalance = loan.remainingBalance || loan.totalRepayable;
       });
+      guarantorUserIds = activeGuarantors.map((g) => g.userId);
 
       await LoanRepository.saveLoan(loan, session);
 
       await FinancialLedgerService.recordEntry({
-    entryType: "outflow",
-    accountCategory: "loan_principal_receivable",
-    activityType: "loan_disbursement",
-    amount: disbursementAmount,
-    reference: loan.payoutReference,
-    userId: loan.userId,
-    relatedId: loan._id,
-    relatedModel: "Loans",
-    notes: `Disbursed loan ${loan.loanNumber} to member`,
+        entryType: "outflow",
+        accountCategory: "loan_principal_receivable",
+        activityType: "loan_disbursement",
+        amount: disbursementAmount,
+        reference: manualReference,
+        eventKey: `loan_manual_disbursement:${loan._id}:${manualReference}`,
+        userId: loan.userId,
+        relatedId: loan._id,
+        relatedModel: "Loans",
+        notes: `Manual disbursement confirmed by admin for loan ${loan.loanNumber} (₦${Number(loan.principalAmount).toLocaleString()} principal, ₦${Number(loan.interestAmount || 0).toLocaleString()} upfront interest, ₦${Number(disbursementAmount).toLocaleString()} net disbursed).`,
         session,
       });
 
-  // Financial Ledger: Record Recognized Interest Inflow Revenue
       if (loan.interestAmount > 0) {
         await FinancialLedgerService.recordEntry({
-      entryType: "inflow",
-      accountCategory: "loan_interest_revenue",
-      activityType: "loan_repayment_interest",
-      amount: loan.interestAmount,
-      reference: `INT_${loan.loanNumber}`,
-      userId: loan.userId,
-      relatedId: loan._id,
-      relatedModel: "Loans",
-      notes: `Upfront interest revenue for loan ${loan.loanNumber}`,
+          entryType: "inflow",
+          accountCategory: "loan_interest_revenue",
+          activityType: "loan_repayment_interest",
+          amount: loan.interestAmount,
+          reference: `INT_${loan.loanNumber}`,
+          eventKey: `loan_interest_revenue:${loan._id}:${manualReference}`,
+          userId: loan.userId,
+          relatedId: loan._id,
+          relatedModel: "Loans",
+          notes: `Upfront interest revenue recognized on manually confirmed disbursement for loan ${loan.loanNumber}`,
           session,
         });
       }
@@ -719,44 +753,52 @@ const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
     await session.endSession();
   }
 
-  const guarantorUserIds = activeGuarantors.map((g) => g.userId);
-
-  await Promise.all([
-    createNotification({
-      userId: loan.userId,
-      type: "loan",
-      title: "Loan Approved & Disbursed",
-      message: `Congratulations! Your loan of ₦${loan.principalAmount.toLocaleString()} has been approved.`,
-    }),
-    ...guarantorUserIds.map((gId) =>
+  if (loan?.status === "active" && loan?.payoutStatus === "completed") {
+    await Promise.all([
       createNotification({
-        userId: gId,
-        type: "guarantor",
-        title: "Guarantee Activated",
-        message: `The loan you guaranteed for ${loan.loanNumber} has been approved and is now active.`,
-      })
-    ),
-  ]);
+        userId: loan.userId,
+        type: "loan",
+        title: "Loan Approved & Disbursement Confirmed",
+        message: `Your loan ${loan.loanNumber} has been approved. A manual disbursement of ₦${Number(loan.disbursementAmount || 0).toLocaleString()} has been confirmed by admin. Your repayment schedule is now active.`,
+      }),
+      ...guarantorUserIds.map((gId) =>
+        createNotification({
+          userId: gId,
+          type: "guarantor",
+          title: "Guarantee Activated",
+          message: `The loan you guaranteed for ${loan.loanNumber} has been approved and disbursement has been confirmed. The guarantee is now active.`,
+        })
+      ),
+    ]);
 
-  // Audit trail for the approval decision (P1-002).
-  await logAudit({
-    userId: adminUser._id,
-    userEmail: adminUser.email,
-    userRole: adminUser.role,
-    action: "loan_approve",
-    targetType: "loan",
-    targetId: loan._id,
-    details: {
-      loanNumber: loan.loanNumber,
-      principalAmount: loan.principalAmount,
-      interestAmount: loan.interestAmount,
-      totalRepayable: loan.totalRepayable,
-      disbursementAmount: loan.disbursementAmount,
-      guarantorIds: guarantorUserIds,
-    },
-  });
+    await logAudit({
+      userId: adminUser._id,
+      userEmail: adminUser.email,
+      userRole: adminUser.role,
+      action: "loan_manual_disbursement_confirmed",
+      targetType: "loan",
+      targetId: loan._id,
+      details: {
+        loanNumber: loan.loanNumber,
+        principalAmount: loan.principalAmount,
+        interestAmount: loan.interestAmount,
+        disbursementAmount: loan.disbursementAmount,
+        totalRepayable: loan.totalRepayable,
+        payoutReference: loan.payoutReference,
+        disbursementMode: "manual",
+        confirmedBy: adminUser._id,
+        confirmedAt: loan.disbursedAt,
+        guarantorIds: guarantorUserIds,
+      },
+    });
+  }
 
   return loan;
+};
+
+// Backward-compatible export name used by controllers/routes.
+const approveAndDisburseLoan = async ({ loanId, adminUser }) => {
+  return finalizeManualLoanDisbursement({ loanId, adminUser });
 };
 
 const processLoanRepayment = async ({
@@ -1020,6 +1062,16 @@ const processLoanRepayment = async ({
     });
   }
 
+  // Recalculate guarantor recovery tracking after repayment (infrastructure only; no auto deductions).
+  try {
+    if (["warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days", "active", "completed"].includes(updatedLoan.status)) {
+      const { syncRecoveryObligations } = require("../Utilis/loanDefaulterEngine");
+      await syncRecoveryObligations(updatedLoan);
+    }
+  } catch (recoveryErr) {
+    console.error("[LOAN REPAYMENT] recovery obligation sync failed:", recoveryErr.message);
+  }
+
   await Promise.all(notifications);
   return updatedLoan;
 };
@@ -1184,6 +1236,8 @@ const triggerLoanDefaulterCheck = async () => {
   return result.summary;
 };
 
+const finalizeLoanDisbursement = finalizeManualLoanDisbursement;
+
 const LoanService = {
   getEligibility,
   getActiveLoan,
@@ -1194,10 +1248,12 @@ const LoanService = {
   cancelApplication,
   replaceGuarantor,
   approveAndDisburseLoan,
+  finalizeLoanDisbursement,
+  finalizeManualLoanDisbursement,
   initializeLoanRepayment,
   verifyLoanRepayment,
   processLoanRepayment,
   triggerLoanDefaulterCheck,
 };
 
-module.exports = { LoanService, processLoanRepayment };
+module.exports = { LoanService, processLoanRepayment, finalizeLoanDisbursement, finalizeManualLoanDisbursement };

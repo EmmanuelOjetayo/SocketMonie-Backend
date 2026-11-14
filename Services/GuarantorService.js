@@ -42,9 +42,9 @@ const search = async (referralCode, userId, loanAmount = 0) => {
   }
   if (loanAmount > 0) {
     const requiredThreshold = loanAmount * 0.25;
-    if (netSavings <= requiredThreshold) {
+    if (netSavings < requiredThreshold) {
       throw new AppError(
-        `This member's savings (₦${netSavings.toLocaleString()}) must be greater than 25% of the requested loan amount (₦${requiredThreshold.toLocaleString()}).`,
+        `This member's savings (₦${netSavings.toLocaleString()}) must be at least 25% of the requested loan amount (₦${requiredThreshold.toLocaleString()}).`,
         400
       );
     }

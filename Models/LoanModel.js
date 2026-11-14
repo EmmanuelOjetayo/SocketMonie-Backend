@@ -286,6 +286,16 @@ const LoanSchema = new mongoose.Schema(
       default: "pending",
     },
     payoutRef: { type: String, default: null },
+    payoutInitiatedAt: { type: Date, default: null },
+    payoutFailedAt: { type: Date, default: null },
+    payoutFailureReason: { type: String, default: null },
+    payoutProviderResponse: { type: mongoose.Schema.Types.Mixed, default: null },
+    disbursementBankDetails: {
+      bankCode: { type: String, default: null },
+      bankName: { type: String, default: null },
+      accountNumber: { type: String, default: null },
+      accountName: { type: String, default: null },
+    },
 
     timeline: [
       {

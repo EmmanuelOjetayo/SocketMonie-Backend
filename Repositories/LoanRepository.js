@@ -99,6 +99,12 @@ const LoanRepository = {
     return loan.save();
   },
 
+  updateById: (loanId, update, session = null) => {
+    const options = { new: true };
+    if (session) options.session = session;
+    return Loan.findByIdAndUpdate(loanId, update, options);
+  },
+
   findGuarantorDocument: (filter, session = null) => {
     const query = Guarantor.findOne(filter);
     if (session) query.session(session);

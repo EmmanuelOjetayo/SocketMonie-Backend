@@ -137,10 +137,13 @@ exports.approveAndDisburseLoan = async (req, res, next) => {
       loanId: req.params.loanId,
       adminUser: req.user,
     });
+    const isDisbursed = loan?.status === "active" && loan?.payoutStatus === "completed";
 
     return res.status(200).json({
       success: true,
-      message: "Loan approved and disbursed successfully.",
+      message: isDisbursed
+        ? "Loan approved and manual disbursement confirmed successfully. Repayment schedule is now active."
+        : "Loan approval processed.",
       loan,
     });
   } catch (err) {

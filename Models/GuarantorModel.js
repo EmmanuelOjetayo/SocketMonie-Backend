@@ -114,6 +114,19 @@ const GuarantorSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    consentGivenAt: Date,
+    consentEvidence: String,
+    providerReference: String,
+    mandateStatus: {
+      type: String,
+      enum: ["not_provided", "pending", "authorized", "completed", "revoked"],
+      default: "not_provided",
+    },
+    isLocked: {
+      type: Boolean,
+      default: false,
+    },
+    lockedAt: Date,
   },
   { timestamps: true }
 );
