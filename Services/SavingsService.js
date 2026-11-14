@@ -9,6 +9,7 @@ const { ReferralService } = require("./ReferralService");
 const { recordMembershipTransaction } = require("./TransactionService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
+const { isSuccessfulStatus } = require("../Utilis/paymentStatus");
 
 // Available balance: completed net savings minus withdrawals already reserved
 // by pending/approved-but-unpaid requests (prevents concurrent double-spend).
@@ -385,7 +386,7 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
     throw new AppError("Currency mismatch.", 400);
   }
 
-  if (verification?.status === "success" && String(payment?.status || "").toLowerCase() === "successful") {
+  if (verification?.status === "success" && isSuccessfulStatus(payment?.status)) {
     const amountPaid = Number(payment.charged_amount ?? payment.amount_settled ?? payment.amount ?? 0);
     console.log(`[MEMBERSHIP] ③ FLW OK | amountPaid: ${amountPaid} (fee: ${MEMBERSHIP_FEE_AMOUNT})`);
     if (amountPaid < MEMBERSHIP_FEE_AMOUNT) {
