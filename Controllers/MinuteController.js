@@ -13,6 +13,7 @@ const {
 } = require("../Utilis/notificationHelper");
 const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 const MinuteTransaction = require("../Models/MinuteTransactionModel");
+const { isSuccessfulStatus } = require("../Utilis/paymentStatus");
 const { recordMinuteTransaction } = require("../Services/TransactionService");
 const { updateUserScore } = require("../Utilis/scoreService");
 
@@ -690,8 +691,7 @@ exports.verifyMinutes = async (
     if (
       verification?.status !==
         "success" ||
-      String(verification?.data?.status || "").toLowerCase() !==
-        "successful"
+      !isSuccessfulStatus(verification?.data?.status)
     ) {
       return res.status(400).json({
         success: false,
