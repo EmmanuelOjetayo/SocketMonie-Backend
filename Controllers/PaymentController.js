@@ -47,11 +47,6 @@ exports.paymentCallback = async (req, res) => {
       normalizedStatus === "accepted" ||
       normalizedStatus === "transfer_successful";
 
-    const redirectBase =
-      isSuccessStatus ||
-      normalizedStatus === "transfer_successful"
-        ? `${process.env.FRONTEND_URL}/payments/savings/success`
-        : `${process.env.FRONTEND_URL}/payments/savings/failed`;
 
     // P0-001: settle the deposit server-side (idempotent) BEFORE redirecting,
     // so a missed/delayed webhook can't leave the payment unrecorded.
@@ -82,6 +77,11 @@ exports.paymentCallback = async (req, res) => {
         // state === "pending": provider verification unavailable — redirect to the
         // success page, which re-verifies server-side on load and routes to
         // failed/pending as appropriate. Never claim success on the callback alone.
+        if (reconcile.state === "pending") {
+          return res.redirect(
+            `${process.env.FRONTEND_URL}/payments/savings/success?${params.join("&")}`
+          );
+        }
       } catch (err) {
         // Any unexpected reconciliation failure keeps the normal redirect flow;
         // webhook + frontend re-verification remain the safety net.
@@ -89,7 +89,10 @@ exports.paymentCallback = async (req, res) => {
       }
     }
 
-    return res.redirect(`${redirectBase}?${params.join("&")}`);
+    // No verifiable outcome was established server-side — never choose the
+    // redirect target from the callback query params alone. The frontend status
+    // poller remains the authoritative source once a reference exists.
+    return res.redirect(`${process.env.FRONTEND_URL}/payments/savings/success?${params.join("&")}`);
   } catch (err) {
     console.error("Callback error:", err);
     return res.redirect(`${process.env.FRONTEND_URL}/payments/savings/failed?reason=callback_error`);
