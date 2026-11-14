@@ -20,6 +20,7 @@ const {
   toCanonicalStatus,
   typeFromReference,
   isReconcilableReference,
+  isSuccessfulStatus,
 } = require("../Utilis/paymentStatus");
 
 const LoanTransaction = require("../Models/LoanTransactionModel");
@@ -84,7 +85,7 @@ const assertFlwSuccess = (verification) => {
   }
   const data = verification.data || {};
   const status = String(data.status || "").toLowerCase();
-  if (status !== "successful") {
+  if (!isSuccessfulStatus(status)) {
     throw new AppError(`Payment not successful. Status: ${data.status || "unknown"}`, 400);
   }
   return data;
@@ -267,7 +268,7 @@ const handleDepositWebhook = async (data) => {
     console.log("[DEPOSIT WEBHOOK] ✗ missing reference or transaction id — ignoring event");
     return;
   }
-  if (status !== "successful") {
+  if (!isSuccessfulStatus(status)) {
     // Only successful charges complete deposits; failures handled via verify path UX.
     console.log(`[DEPOSIT WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
     return;
@@ -281,7 +282,7 @@ const handleDepositWebhook = async (data) => {
     return;
   }
   const v = verified.data || {};
-  if (String(v.status || "").toLowerCase() !== "successful") {
+  if (!isSuccessfulStatus(v.status)) {
     console.log(`[DEPOSIT WEBHOOK] ✗ FLW re-verify says status "${v.status}" — no settlement`);
     return;
   }
@@ -409,7 +410,7 @@ const handleWithdrawalWebhook = async (data) => {
 
       if (withdrawal.flutterwaveRef && withdrawal.flutterwaveRef !== String(transferId)) return;
 
-      if (status === "successful" || status === "success") {
+      if (isSuccessfulStatus(status)) {
         withdrawal = await PaymentRepository.markCompleted("savings", withdrawal._id, transferId, { amount: settledAmount }, session);
         if (!withdrawal) return;
         didProcess = true;
@@ -460,7 +461,7 @@ const handleWithdrawalWebhook = async (data) => {
   // duplicate/replayed events are acknowledged silently.
   if (!withdrawal || !didProcess) return;
 
-  if (status === "successful" || status === "success") {
+  if (isSuccessfulStatus(status)) {
     await createNotification({
       userId: withdrawal.userId,
       type: "savings",
@@ -507,7 +508,7 @@ const handleLoanPayoutWebhook = async (data) => {
 
   if (loan.payoutRef && loan.payoutRef !== String(transferId)) return;
 
-  if (status === "successful" || status === "success") {
+  if (isSuccessfulStatus(status)) {
     loan.payoutStatus = "completed";
     loan.payoutRef = String(transferId);
     await loan.save();
@@ -551,7 +552,7 @@ const handleRepaymentWebhook = async (data) => {
     console.log("[REPAYMENT WEBHOOK] ✗ missing reference or transaction id — ignoring event");
     return;
   }
-  if (status !== "successful") {
+  if (!isSuccessfulStatus(status)) {
     console.log(`[REPAYMENT WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
     return;
   }
@@ -559,7 +560,7 @@ const handleRepaymentWebhook = async (data) => {
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
-    if (String(v.status || "").toLowerCase() !== "successful") {
+    if (!isSuccessfulStatus(v.status)) {
       console.log(`[REPAYMENT WEBHOOK] ✗ FLW re-verify says status "${v.status}" — no settlement`);
       return;
     }
@@ -591,7 +592,7 @@ const handleRepaymentWebhook = async (data) => {
     return;
   }
 
-  if (status === "successful") {
+  if (isSuccessfulStatus(status)) {
     console.log(
       `[REPAYMENT WEBHOOK] ③ updating loan ${repayment.loanId} | userId: ${repayment.userId} | amount: ${settledAmount || repayment.amount}`
     );
@@ -659,7 +660,7 @@ const handleMembershipFeeWebhook = async (data) => {
     `[MEMBERSHIP WEBHOOK] ① received | ref: ${reference} | TX: ${transactionId} | status: ${status} | amount: ${amount}`
   );
 
-  if (status !== "successful") {
+  if (!isSuccessfulStatus(status)) {
     console.log(`[MEMBERSHIP WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
     return;
   }
@@ -670,7 +671,7 @@ const handleMembershipFeeWebhook = async (data) => {
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
-    if (String(v.status || "").toLowerCase() !== "successful") {
+    if (!isSuccessfulStatus(v.status)) {
       console.log(`[MEMBERSHIP WEBHOOK] ✗ FLW re-verify says status "${v.status}" — no settlement`);
       return;
     }
@@ -785,9 +786,9 @@ const handleMinuteWebhook = async (data) => {
   console.log(
     `[MINUTES WEBHOOK] ② checkout record ${pendingPayment ? `found (status: ${pendingPayment.status})` : "NOT found — falling back"}`
   );
-  if (!pendingPayment && status !== "successful") return;
+  if (!pendingPayment && !isSuccessfulStatus(status)) return;
 
-  if (status !== "successful") {
+  if (!isSuccessfulStatus(status)) {
     if (pendingPayment.status === "completed") return;
     console.log(`[MINUTES WEBHOOK] ③ marking checkout record FAILED (webhook status: ${status})`);
     pendingPayment.status = "failed";
@@ -807,7 +808,7 @@ const handleMinuteWebhook = async (data) => {
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
-    if (String(v.status || "").toLowerCase() !== "successful") {
+    if (!isSuccessfulStatus(v.status)) {
       console.log(
         `[MINUTES WEBHOOK] ✗ FLW re-verify says status "${v.status}" (not successful) — no settlement`
       );

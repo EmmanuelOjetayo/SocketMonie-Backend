@@ -51,9 +51,23 @@ const isReconcilableReference = (ref) =>
     String(ref || "").startsWith(prefix)
   );
 
+/**
+ * Provider statuses that count as a successful payment outcome.
+ * Flutterwave uses "successful" for most flows, but observed payloads
+ * (checkout callback / certain bank-transfer and sandbox outcomes) report
+ * "completed" alongside an approval signal such as charge_response_code "00".
+ */
+const SUCCESS_STATUSES = ["successful", "completed"];
+
+/** True when the provider status is a known successful payment outcome. */
+const isSuccessfulStatus = (value) =>
+  SUCCESS_STATUSES.includes(String(value || "").toLowerCase());
+
 module.exports = {
   CANONICAL_STATUS,
   toCanonicalStatus,
   typeFromReference,
   isReconcilableReference,
+  SUCCESS_STATUSES,
+  isSuccessfulStatus,
 };
