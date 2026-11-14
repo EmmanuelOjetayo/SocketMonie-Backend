@@ -770,6 +770,8 @@ const processLoanRepayment = async ({
   let updatedLoan;
   let totalPenalty = 0;
   let wasDuplicate = false;
+  let excessAmount = 0;
+  let appliedToLoan = 0;
 
   console.log(
     `[LOAN REPAYMENT WEBHOOK→SERVICE] received | loanId: ${loanId} | TX: ${transactionId} | ref: ${paymentReference} | amount: ${paymentAmount}`
@@ -827,8 +829,8 @@ const processLoanRepayment = async ({
       // amount to the loan. Excess is recorded separately and flagged for admin
       // refund review — never silently discarded, never applied to another loan,
       // never treated as interest/revenue. (Owner decision: refund_review)
-      let appliedToLoan = payment;
-      let excessAmount = 0;
+      appliedToLoan = payment;
+      excessAmount = 0;
       if (payment > loan.remainingBalance) {
         appliedToLoan = loan.remainingBalance;
         excessAmount = Math.round(payment - loan.remainingBalance);
@@ -980,6 +982,8 @@ const processLoanRepayment = async ({
     targetId: updatedLoan._id,
     details: {
       paymentAmount,
+      appliedToLoan,
+      excessAmount,
       transactionId,
       reference: paymentReference,
       remainingBalance: updatedLoan.remainingBalance,
@@ -990,6 +994,7 @@ const processLoanRepayment = async ({
 
   let message = `Loan repayment of ₦${Number(paymentAmount).toLocaleString()} received successfully.`;
   if (totalPenalty > 0) message += ` ₦${totalPenalty.toLocaleString()} late penalty applied.`;
+  if (excessAmount > 0) message += ` ₦${excessAmount.toLocaleString()} excess has been recorded for administrative refund review.`;
   if (updatedLoan.status === "completed") message += " Congratulations! Your loan has been fully repaid.";
 
   const notifications = [
