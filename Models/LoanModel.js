@@ -55,7 +55,8 @@ const LoanSchema = new mongoose.Schema(
 
     interestRate: {
       type: Number,
-      default: 5,
+      // Fixed flat 2% upfront (Model A). Stored per-loan; service always sets this.
+      default: 2,
     },
 
     interestAmount: {

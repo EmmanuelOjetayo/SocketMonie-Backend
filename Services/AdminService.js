@@ -184,8 +184,23 @@ const getLoans = async ({ status, page, limit, search }) => {
   const filter = {};
   if (status) filter.status = status;
   if (search) {
-    const users = await User.find({ fullName: { $regex: search, $options: "i" } }).select("_id");
-    filter.$or = [{ _id: { $regex: search, $options: "i" } }, { userId: { $in: users.map((u) => u._id) } }];
+    const searchTerm = String(search).trim();
+    const users = await User.find({
+      $or: [
+        { fullName: { $regex: searchTerm, $options: "i" } },
+        { email: { $regex: searchTerm, $options: "i" } },
+        { referralCode: { $regex: searchTerm, $options: "i" } },
+      ],
+    }).select("_id");
+    const orConditions = [
+      { loanNumber: { $regex: searchTerm, $options: "i" } },
+      { userId: { $in: users.map((u) => u._id) } },
+    ];
+    // Match by loan ObjectId only when the search term is a valid ObjectId.
+    if (/^[a-fA-F0-9]{24}$/.test(searchTerm)) {
+      orConditions.unshift({ _id: searchTerm });
+    }
+    filter.$or = orConditions;
   }
   const [total, loans] = await Promise.all([
     AdminRepository.countLoans(filter),
