@@ -823,22 +823,24 @@ const processLoanRepayment = async ({
         loan.remainingBalance = Math.round(loan.remainingBalance + totalPenalty);
       }
 
-      // Never accept a repayment that exceeds the outstanding obligation
-      // (prevents overpayment / double-amount acceptance).
+      // Overpayment handling (refund_review): apply only the valid outstanding
+      // amount to the loan. Excess is recorded separately and flagged for admin
+      // refund review — never silently discarded, never applied to another loan,
+      // never treated as interest/revenue. (Owner decision: refund_review)
+      let appliedToLoan = payment;
+      let excessAmount = 0;
       if (payment > loan.remainingBalance) {
+        appliedToLoan = loan.remainingBalance;
+        excessAmount = Math.round(payment - loan.remainingBalance);
         console.log(
-          `[LOAN REPAYMENT WEBHOOK→SERVICE] ✗ overpayment blocked | payment: ${payment} | outstanding: ${loan.remainingBalance} — throwing`
-        );
-        throw new AppError(
-          `Payment of ₦${payment.toLocaleString()} exceeds the outstanding balance of ₦${loan.remainingBalance.toLocaleString()}.`,
-          400
+          `[LOAN REPAYMENT WEBHOOK→SERVICE] ⚠ overpayment detected | payment: ${payment} | outstanding: ${loan.remainingBalance} | applied: ${appliedToLoan} | excess(refund_review): ${excessAmount}`
         );
       }
 
-      loan.amountPaid += payment;
+      loan.amountPaid += appliedToLoan;
       loan.remainingBalance = Math.max(0, loan.totalRepayable - loan.amountPaid);
 
-      let remainingPayment = payment;
+      let remainingPayment = appliedToLoan;
       for (const installment of loan.installments) {
         if (installment.status !== "paid" && remainingPayment > 0) {
           const amountNeeded = installment.amountDue - installment.amountPaid;
@@ -872,12 +874,39 @@ const processLoanRepayment = async ({
 
       loan.lastPaymentAt = new Date();
       loan.repaymentHistory.push({
-        amount: payment,
+        amount: appliedToLoan,
         method: paymentMethod,
         reference: paymentReference,
         transactionId,
         paidAt: new Date(),
       });
+
+      // Record excess for administrative refund review (not applied to loan).
+      if (excessAmount > 0) {
+        if (!Array.isArray(loan.overpaymentRefunds)) loan.overpaymentRefunds = [];
+        loan.overpaymentRefunds.push({
+          amount: excessAmount,
+          status: "pending_review",
+          reference: paymentReference,
+          transactionId,
+          recordedAt: new Date(),
+        });
+        // Ledger: record excess as a separate inflow (cash received, held pending refund).
+        // Tracked distinctly from loan principal application; never treated as revenue.
+        await FinancialLedgerService.recordEntry({
+          entryType: "inflow",
+          accountCategory: "cash_asset",
+          activityType: "reversal_adjustment",
+          amount: excessAmount,
+          reference: `${paymentReference}_EXCESS`,
+          eventKey: `overpayment_excess:${paymentReference}`,
+          userId: loan.userId,
+          relatedId: loan._id,
+          relatedModel: "Loans",
+          notes: `Overpayment excess (refund_review) for loan ${loan.loanNumber}. Not applied to balance. Awaiting admin refund action.`,
+          session,
+        });
+      }
 
       await LoanRepository.saveLoan(loan, session);
 
@@ -915,12 +944,14 @@ const processLoanRepayment = async ({
         entryType: "inflow",
         accountCategory: "loan_principal_receivable",
         activityType: "loan_repayment_principal",
-        amount: payment,
+        amount: appliedToLoan,
         reference: paymentReference,
         userId: loan.userId,
         relatedId: loan._id,
         relatedModel: "Loans",
-        notes: `Repayment received for loan ${loan.loanNumber}`,
+        notes: excessAmount > 0
+          ? `Repayment applied to loan ${loan.loanNumber} (₦${appliedToLoan.toLocaleString()} of ₦${payment.toLocaleString()}; excess ₦${excessAmount.toLocaleString()} flagged for refund review)`
+          : `Repayment received for loan ${loan.loanNumber}`,
         session,
       });
 

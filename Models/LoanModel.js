@@ -259,6 +259,26 @@ const LoanSchema = new mongoose.Schema(
       },
     ],
 
+    // Overpayment excess amounts flagged for administrative refund review.
+    // Never applied to loan balance, never treated as interest/revenue.
+    overpaymentRefunds: [
+      {
+        amount: Number,
+        status: {
+          type: String,
+          enum: ["pending_review", "approved", "rejected", "refunded"],
+          default: "pending_review",
+        },
+        reference: String,
+        transactionId: String,
+        recordedAt: { type: Date, default: Date.now },
+        reviewedAt: Date,
+        reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Users" },
+        refundReference: String,
+        notes: String,
+      },
+    ],
+
     payoutReference: { type: String, default: null },
     payoutStatus: {
       type: String,
