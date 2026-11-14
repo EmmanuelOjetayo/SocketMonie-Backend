@@ -69,7 +69,7 @@ const RegisterService = async(userData)=>{
               email,
               phone,
               referralCode: newMemberReferralCode,
-              referredBy: referrer._id,
+              // referredBy: referrer._id,
               password: hashedPassword,
               otp: hashedOTP,
               otpExpiresAt,
@@ -85,7 +85,7 @@ const RegisterService = async(userData)=>{
             }, { session });
 
             await ReferralRepository.createRegistration({
-              referrerId: referrer._id,
+              // referrerId: referrer._id,
               referredUserId: newUser._id,
               referralCode: cleanedReferralCode,
               status: "registered",
