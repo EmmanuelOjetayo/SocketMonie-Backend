@@ -12,6 +12,7 @@ const {
   createNotification,
 } = require("../Utilis/notificationHelper");
 const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
+const MinuteTransaction = require("../Models/MinuteTransactionModel");
 const { recordMinuteTransaction } = require("../Services/TransactionService");
 const { updateUserScore } = require("../Utilis/scoreService");
 
@@ -792,10 +793,31 @@ exports.verifyMinutes = async (
       );
 
     if (!outstanding.length) {
+      // The obligations were already settled before this verify pass ran (the
+      // webhook is the fast settlement channel and can win the race). Return
+      // the settled transaction receipt — full payload — instead of a bare
+      // success flag, so a payment that DID succeed still resolves cleanly.
+      const settledRecord = await MinuteTransaction.findOne({
+        userId,
+        $or: [
+          ...(ref ? [{ reference: ref }] : []),
+          ...(txId ? [{ transactionId: String(txId) }] : []),
+        ],
+      }).lean();
+      const settledMonths =
+        Number(settledRecord?.metadata?.monthsSettled) || 1;
       return res.json({
         success: true,
+        alreadyVerified: true,
         message:
           "All SocketMinutes contributions are already settled.",
+        data: {
+          reference: ref,
+          tx_ref: ref,
+          transactionId: settledRecord?.transactionId || txId || null,
+          contributionAmount: Number(settledRecord?.amount || 0),
+          monthsSettled: settledMonths,
+        },
       });
     }
 

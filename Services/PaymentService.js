@@ -1338,6 +1338,26 @@ const getPaymentStatus = async (userId, reference) => {
     const outcome = await reconcilePaymentByReference(ref);
     reconciled = outcome?.status === "reconciled";
     if (reconciled) return getPaymentStatus(userId, ref); // re-read after settlement
+    // Definitive provider failure (verified against the payment provider via
+    // Flutterwave's API — NOT the browser callback) on a still-pending record:
+    // the customer did not successfully pay. Persist the failed state on the
+    // pending record (mirrors the webhook failure flow) and converge the status
+    // so the result page shows the failure instead of polling forever on
+    // stale "pending" state.
+    const providerStatus = String(outcome?.status || "").toLowerCase();
+    const FAILED_PROVIDER_STATUSES = ["failed", "cancelled", "reversed", "terminated"];
+    if (FAILED_PROVIDER_STATUSES.includes(providerStatus)) {
+      try {
+        const pendingRecord = await PaymentRepository.findSavingsByReference(ref);
+        if (pendingRecord && pendingRecord.status === "pending") {
+          pendingRecord.status = "failed";
+          await pendingRecord.save();
+        }
+      } catch (persistErr) {
+        console.error("[PAYMENT STATUS] failed to persist provider failure:", persistErr?.message || persistErr);
+      }
+      return { ...current, status: "failed", reconciled, lastCheckedAt: new Date().toISOString() };
+    }
   }
 
   return { ...current, reconciled, lastCheckedAt: new Date().toISOString() };
