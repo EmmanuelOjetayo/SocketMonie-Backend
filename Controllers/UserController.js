@@ -227,8 +227,8 @@ const UpdatePersonalInfo = async (req, res) => {
 
     return res.status(error.statusCode || 500).json({
       success:false,
-      message:"Server error updating personal information",
-      error:error.message
+      message: error.statusCode ? error.message : "Server error updating personal information",
+      error: error.statusCode ? undefined : error.message
     });
 
   }

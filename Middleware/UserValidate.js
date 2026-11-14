@@ -89,6 +89,8 @@ const ResetPinValidate = (req, res, next) => {
 
 
 const UpdatePersonalInfoSchema = joi.object({
+  fullName: joi.string().trim().min(2).max(100),
+  phone: joi.string().trim().pattern(/^[0-9+\-\s()]+$/).min(7).max(20),
   dateOfBirth: joi.date().iso(),
   gender: joi.string().valid("male", "female"),
   address: joi.string().trim().min(5).max(255),
