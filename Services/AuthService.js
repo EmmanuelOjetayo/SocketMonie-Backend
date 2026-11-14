@@ -45,9 +45,9 @@ const RegisterService = async(userData)=>{
         const cleanedReferralCode = referralCode.trim().toUpperCase();
 
         const referrer = await AuthRepository.findByEntity("referralCode", cleanedReferralCode);
-        // if (!referrer) {
-        //   throw new AppError("Invalid referral code. A valid member referral code is required to join SocketMonie.", 400);
-        // }
+        if (!referrer) {
+          throw new AppError("Invalid referral code. A valid member referral code is required to join SocketMonie.", 400);
+        }
     
         // 3. Hash Password & Generate User's Own Unique Referral Code
         const hashedPassword = await bcrypt.hash(password, 13);
@@ -69,7 +69,7 @@ const RegisterService = async(userData)=>{
               email,
               phone,
               referralCode: newMemberReferralCode,
-              // referredBy: referrer._id,
+              referredBy: referrer._id,
               password: hashedPassword,
               otp: hashedOTP,
               otpExpiresAt,
@@ -85,7 +85,7 @@ const RegisterService = async(userData)=>{
             }, { session });
 
             await ReferralRepository.createRegistration({
-              // referrerId: referrer._id,
+              referrerId: referrer._id,
               referredUserId: newUser._id,
               referralCode: cleanedReferralCode,
               status: "registered",
