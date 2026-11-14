@@ -111,6 +111,11 @@ const verifyDeposit = async (userId, ref, transactionId) => {
   if (!existingSavings) {
     throw new AppError("Deposit not found", 404);
   }
+  // Defensive: a SocketMinutes checkout is authorised against the minutes
+  // settlement path only. It must never be completed as a savings deposit.
+  if (String(existingSavings.category || "").toLowerCase() === "minutes_payment" || /^MIN_/i.test(lookupRef)) {
+    throw new AppError("This reference is a Socket Minutes payment. Complete it via the minutes flow.", 400);
+  }
   // Ownership comes BEFORE the completed-state fast path so a caller can never
   // probe another member's transaction reference (403 vs 404/already-settled).
   if (String(existingSavings.userId) !== String(userId)) {
@@ -499,8 +504,8 @@ const handleLoanPayoutWebhook = async (data) => {
   const reference = data.reference || data.tx_ref;
   const status = data.status;
   const transferId = data.id;
-  const settledAmount = data.amount;
 
+  if (!reference || !transferId) return;
   if (await PaymentRepository.isTransactionProcessed(transferId, "loan", "payoutRef")) return;
 
   const loan = await PaymentRepository.findLoanByPayoutReference(reference);
@@ -508,33 +513,35 @@ const handleLoanPayoutWebhook = async (data) => {
 
   if (loan.payoutRef && loan.payoutRef !== String(transferId)) return;
 
+  // Manual disbursement mode: do not auto-finalize loans from external transfer webhooks.
+  // Record provider transfer outcome for audit/visibility only; admin-confirmed manual
+  // disbursement remains the authoritative activation path.
   if (isSuccessfulStatus(status)) {
-    loan.payoutStatus = "completed";
-    loan.payoutRef = String(transferId);
-    await loan.save();
-
-    await createNotification({
-      userId: loan.userId,
-      type: "loan",
-      title: "Loan Disbursed",
-      message: `Your loan of ₦${loan.principalAmount.toLocaleString()} has been disbursed to your bank account.`,
-    });
-    await logAudit({
-      userId: loan.userId,
-      action: "loan_payout",
-      targetType: "loan",
-      targetId: loan._id,
-      details: { principal: loan.principalAmount, settledAmount, reference },
-    });
-  } else {
-    loan.payoutStatus = "failed";
-    await loan.save();
-    await createNotification({
-      userId: loan.userId,
-      type: "loan",
-      title: "Loan Disbursement Failed",
-      message: `The disbursement of your loan of ₦${loan.principalAmount.toLocaleString()} failed. Please contact support.`,
-    });
+    if (loan.payoutStatus !== "completed" && loan.status !== "active") {
+      loan.payoutProviderResponse = {
+        ...(loan.payoutProviderResponse || {}),
+        webhookStatus: status,
+        webhookTransferId: String(transferId),
+        webhookReference: reference,
+        receivedAt: new Date(),
+      };
+      await loan.save();
+    }
+  } else if (String(status || "").toLowerCase() === "failed") {
+    if (loan.payoutStatus !== "completed" && loan.status !== "active") {
+      loan.payoutStatus = "failed";
+      loan.payoutRef = String(transferId);
+      loan.payoutFailedAt = new Date();
+      loan.payoutFailureReason = data?.complete_message || data?.message || "Transfer failed";
+      loan.payoutProviderResponse = {
+        ...(loan.payoutProviderResponse || {}),
+        webhookStatus: status,
+        webhookTransferId: String(transferId),
+        webhookReference: reference,
+        receivedAt: new Date(),
+      };
+      await loan.save();
+    }
   }
 };
 

@@ -181,11 +181,20 @@ const normalize = (type, row) => {
   const amount = Number(row.amount || 0);
   const isDebit = type === "savings" && row.type === "withdrawal";
   const labelMap = LABELS[type] || {};
+  // Minute checkouts are initialised as Savings records (type "deposit",
+  // category "minutes_payment") so the pending webhook/reconciliation
+  // flow can claim them. Anything minutes-tagged must surface as a
+  // SocketMinutes contribution - never as a savings deposit.
+  const category =
+    type === "minute" && String(row.category || "").toLowerCase() === "minutes_payment"
+      ? "minute_contribution"
+      : row.type || type;
+  const labelType = category === "minute_contribution" ? "minute_contribution" : row.type || type;
   return {
     id: String(row._id || row.id || ""),
     type,
-    category: row.type || type,
-    label: labelMap[row.type] || labelMap.default || "Transaction",
+    category,
+    label: labelMap[labelType] || labelMap[category] || labelMap.default || "Transaction",
     amount,
     // Withdrawal receipts need the processing fee + total deduction; zero
     // everywhere else. Legacy rows that never recorded a fee read as 0.

@@ -19,7 +19,8 @@ const PaymentRepository = {
 
   findAndCompleteDeposit: (reference, updateData, session = null) =>
     Savings.findOneAndUpdate(
-      { reference, status: "pending" },
+      // Never let the deposit settlement path complete a Socket Minutes checkout
+      { reference, status: "pending", category: { $ne: "minutes_payment" } },
       { $set: updateData },
       { new: true, ...(session ? { session } : {}) }
     ),
