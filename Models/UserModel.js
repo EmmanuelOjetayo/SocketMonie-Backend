@@ -174,7 +174,17 @@ thisMonthMinutesUnpaid: {
     isPinSet: {
         type: Boolean,
         default: false,
-    },    
+    },
+    // Transaction PIN reset (forgot/recovery) brute-force guard: counts failed
+    // OTP verifications and stamps when the counter locks the member out until.
+    pinResetAttempts: {
+        type: Number,
+        default: 0,
+    },
+    pinResetAttemptExpiresAt: {
+        type: Date,
+        default: null,
+    },
 }, { timestamps: true });
 
 module.exports = mongoose.model("Users", UserSchema);

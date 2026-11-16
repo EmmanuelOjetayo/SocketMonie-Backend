@@ -66,6 +66,15 @@ const resetPinSchema = joi.object({
   newPin: joi.string().length(4).pattern(/^[0-9]+$/).required(),
 });
 
+// Change (rotate) Transaction PIN — authenticated member must supply the
+// current PIN plus the new PIN (confirmation optional server-side, but must
+// match when supplied).
+const changePinSchema = joi.object({
+  currentPin: joi.string().length(4).pattern(/^[0-9]+$/).required(),
+  newPin: joi.string().length(4).pattern(/^[0-9]+$/).required(),
+  confirmNewPin: joi.string().length(4).pattern(/^[0-9]+$/).optional(),
+});
+
 
 const ForgotPinValidate = (req, res, next) => {
     const { error, value } = forgotPinSchema.validate(req.body);
@@ -80,6 +89,16 @@ const ForgotPinValidate = (req, res, next) => {
 const ResetPinValidate = (req, res, next) => {
     const { error, value } = resetPinSchema.validate(req.body);
      if (error) {
+      throw new AppError(formatValidationError(error), 400);
+    }
+
+    req.body = value;
+    next();
+}
+
+const ChangePinValidate = (req, res, next) => {
+    const { error, value } = changePinSchema.validate(req.body);
+    if (error) {
       throw new AppError(formatValidationError(error), 400);
     }
 
@@ -116,6 +135,7 @@ const UserValidator = {
     BankDetailsValidate,
     ResetPinValidate,
     ForgotPinValidate,
+    ChangePinValidate,
     UpdatePersonalInfoValidate
 }
 module.exports = UserValidator;

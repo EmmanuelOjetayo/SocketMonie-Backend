@@ -1,10 +1,12 @@
 const express = require("express");
 const { upload, kycFileFilter, avatarUpload } = require("../Config/cloudinary");
 const routeProtect = require("../Middleware/AuthMiddleware");
+const { financialLimiter } = require("../Middleware/rateLimiter");
 const {
   GetUserInfo,
   KYCUpload,
   SetPin,
+  ChangePin,
   updateBankDetails,
   forgotPin,
   resetPin,
@@ -25,9 +27,10 @@ UserRoutes.patch("/personal-info", routeProtect, UserValidator.UpdatePersonalInf
 UserRoutes.post('/kyc', routeProtect, upload.single('file'), UserValidator.KYCUploadValidate, KYCUpload);
 UserRoutes.post('/profile-picture', routeProtect, avatarUpload.single('file'), UploadProfilePicture);
 UserRoutes.delete('/profile-picture', routeProtect, DeleteProfilePicture);
-UserRoutes.post('/pin', routeProtect, UserValidator.SetPinValidate, SetPin);
-UserRoutes.post('/pin/forgot', UserValidator.ForgotPinValidate, forgotPin);
-UserRoutes.post('/pin/reset', routeProtect, UserValidator.ResetPinValidate, resetPin);
+UserRoutes.post('/pin', routeProtect, UserValidator.SetPinValidate, financialLimiter, SetPin);
+UserRoutes.post('/pin/change', routeProtect, UserValidator.ChangePinValidate, financialLimiter, ChangePin);
+UserRoutes.post('/pin/forgot', UserValidator.ForgotPinValidate, financialLimiter, forgotPin);
+UserRoutes.post('/pin/reset', routeProtect, UserValidator.ResetPinValidate, financialLimiter, resetPin);
 UserRoutes.put('/bank-details', routeProtect, UserValidator.BankDetailsValidate, updateBankDetails);
 
 // Server-side draft sync (owner decision #4) — user-scoped, 30-day inactivity expiry

@@ -40,6 +40,17 @@ const UpdateSetPin = async (reqUserID, hashedPin, options = {}) => {
     return response
 }
 
+// Transaction PIN security flows (change / reset) need the bcrypt hash to
+// verify a submitted PIN. This lookup is INTERNAL-ONLY: it projects just the
+// hash (plus _id) so no other sensitive field can leak, and it must never be
+// used for response payloads.
+const findUserByIdForPin = async (userId) => {
+    const response = await Users.findById(userId)
+        .select("transactionPin")
+        .lean();
+    return response;
+};
+
 // Duplicate identity prevention (owner-approved KYC decision): an NIN/BVN may
 // be linked to only one member account.
 const findUserWithIdentityValue = async (excludeUserId, { nin, bvn }) => {
@@ -61,6 +72,7 @@ const UserRepository ={
     findUserDetails,
     UpdateDetails,
     UpdateSetPin,
+    findUserByIdForPin,
     findUserWithIdentityValue
 }
 module.exports={

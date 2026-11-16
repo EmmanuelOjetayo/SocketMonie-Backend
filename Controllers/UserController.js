@@ -146,6 +146,20 @@ const SetPin = async (req, res) => {
 };
 
 
+const ChangePin = async (req, res) => {
+  try {
+    const response = await UserService.ChangePinService(req.body, req.user._id, {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    })
+
+    return res.status(200).json({ success: true, message: "Transaction PIN changed successfully.", data: response });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+};
+
+
 const updateBankDetails = async (req,res)=>{
   try{
     const response = await UserService.BankDetailService(req.body, req.user._id)
@@ -235,4 +249,4 @@ const UpdatePersonalInfo = async (req, res) => {
 };
 
 
-module.exports = { GetUserInfo, KYCUpload, SetPin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms, UploadProfilePicture, DeleteProfilePicture };
+module.exports = { GetUserInfo, KYCUpload, SetPin, ChangePin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms, UploadProfilePicture, DeleteProfilePicture };

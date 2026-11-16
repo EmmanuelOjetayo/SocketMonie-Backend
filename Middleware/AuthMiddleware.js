@@ -26,10 +26,11 @@ async function routeProtect(req, res, next) {
     // Support both decodeUser.id and decodeUser._id from JWT payload
     const userId = decodeUser.id || decodeUser._id;
 
-    // Get user from token payload (excluding password)
-    // Automatically includes user status, role, and membershipFeePaid flag
+    // Get user from token payload (excluding password + sensitive auth/OTP
+    // fields AND the bcrypt Transaction PIN hash — financial PINs must never
+    // travel on the request/user object).
     req.user = await Users.findById(userId).select(
-      "-password -otp -otpExpiresAt -resetPasswordOTP -resetPasswordOTPExpiresAt -pinResetOTP -pinResetOTPExpiresAt"
+      "-password -otp -otpExpiresAt -resetPasswordOTP -resetPasswordOTPExpiresAt -pinResetOTP -pinResetOTPExpiresAt -transactionPin"
     );
 
     if (!req.user) {
