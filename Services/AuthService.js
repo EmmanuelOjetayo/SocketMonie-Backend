@@ -8,6 +8,7 @@ const genOTP = require("../Utilis/genOTP")
 const sendEmail = require("../Utilis/sendEmail");
 const verifyOtpTemplate = require("../Utilis/emailTemplates/verifyOtp");
 const forgotPasswordTemplate = require("../Utilis/emailTemplates/forgotPassword");
+const { MINIMUM_REGISTRATION_AGE, calculateAge, parseDobUtcMidnight } = require("../Utilis/ageValidation");
 
 const AppError = require("../Utilis/AppError")
 const { toSafeUserPayload } = require("../Utilis/userPayload")
@@ -26,11 +27,33 @@ const generateUniqueReferralCode = () => {
 };
 const RegisterService = async(userData)=>{
 
-        const {fullName, email, phone, referralCode, password, termsAccepted, privacyAccepted} = userData;
+        const {fullName, email, phone, referralCode, password, termsAccepted, privacyAccepted, dateOfBirth, gender, address, stateOfOrigin, occupation, monthlySavingsCommitment} = userData;
         
     // Terms & Conditions / Privacy Policy acceptance is mandatory at registration.
     if (termsAccepted !== true || privacyAccepted !== true) {
         throw new AppError("You must accept the Socket Monie Terms and Conditions and Privacy Policy to register.", 400);
+    }
+
+    // KYC age gate (server-side source of truth): applicants must be at least
+    // 18 years old. Independently re-validated here so the rule cannot be
+    // bypassed by omitting the client-side `max` attribute or client-side only
+    // validation. dateOfBirth is mandatory (ISO 8601) via signUpSchema, and is
+    // re-checked defensively here before any account is created.
+    const dobUtcMidnight = parseDobUtcMidnight(dateOfBirth);
+    if (dobUtcMidnight === null) {
+        throw new AppError("A valid date of birth is required to create your account.", 400);
+    }
+    const nowUtcMidnight = Date.UTC(
+        new Date().getUTCFullYear(),
+        new Date().getUTCMonth(),
+        new Date().getUTCDate()
+    );
+    if (dobUtcMidnight > nowUtcMidnight) {
+        throw new AppError("Date of birth cannot be in the future.", 400);
+    }
+    const age = calculateAge(dateOfBirth);
+    if (age === null || age < MINIMUM_REGISTRATION_AGE) {
+        throw new AppError("You must be at least 18 years old to create a SocketMonnie account.", 400);
     }
 
     // 1. Check for Duplicate Email and Phone
@@ -82,6 +105,12 @@ const RegisterService = async(userData)=>{
               privacyAcceptedAt: new Date(),
               termsVersion: process.env.TERMS_VERSION || "1.0",
               privacyVersion: process.env.PRIVACY_VERSION || "1.0",
+              dateOfBirth: dobUtcMidnight ? new Date(dobUtcMidnight).toISOString() : null,
+              gender: gender || null,
+              address: address || null,
+              stateOfOrigin: stateOfOrigin || null,
+              occupation: occupation || null,
+              monthlySavingsCommitment: monthlySavingsCommitment ?? 0,
             }, { session });
 
             await ReferralRepository.createRegistration({

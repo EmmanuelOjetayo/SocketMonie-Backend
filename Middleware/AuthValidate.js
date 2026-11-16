@@ -39,6 +39,15 @@ const signUpSchema = joi.object({
   // Terms & Conditions / Privacy Policy acceptance is mandatory at registration.
   termsAccepted: joi.boolean().valid(true).required(),
   privacyAccepted: joi.boolean().valid(true).required(),
+  // KYC / residential information captured during the initial registration
+  // step (single source of truth — mirrored from UpdatePersonalInfo fields).
+  // dateOfBirth is mandatory: the 18+ age gate is enforced before account creation.
+  dateOfBirth: joi.date().iso().required(),
+  gender: joi.string().valid("male", "female").optional(),
+  address: joi.string().trim().min(5).max(255).optional(),
+  stateOfOrigin: joi.string().trim().max(100).optional(),
+  occupation: joi.string().trim().max(100).optional(),
+  monthlySavingsCommitment: joi.number().min(5000).optional(),
 });
 
 
