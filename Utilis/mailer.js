@@ -10,7 +10,39 @@ const { BrevoClient } = require("@getbrevo/brevo");
 
 const apiKey = process.env.BREVO_API_KEY;
 const senderEmail = process.env.BREVO_SENDER || process.env.EMAIL_USER;
-const senderName = process.env.BREVO_SENDER_NAME || "Socket Moni";
+const senderName = process.env.BREVO_SENDER_NAME || "SocketMonnie";
+
+// Minimal, dependency-free HTML → plain text fallback. Deliverability tools
+// (Gmail/Outlook) score multipart/alternative messages more favourably than
+// HTML-only, so every send carries a readable text part automatically.
+const htmlToText = (html) => {
+  const input = String(html || "");
+
+  const blockClose = /<\/(p|div|table|tr|td|h1|h2|h3|h4|li|ul|ol|section|pre|blockquote)\s*>/gi;
+  const lineBreak = /<br\s*\/?>/gi;
+
+  let text = input
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<head[\s\S]*?<\/head>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(blockClose, "\n")
+    .replace(lineBreak, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
+
+  return text
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+};
 
 let client = null;
 
@@ -50,6 +82,9 @@ async function sendEmail({ to, subject, html }) {
       to: [{ email: to }],
       subject,
       htmlContent: html,
+      // Always send a text/plain counterpart (unless one is supplied) —
+      // multipart messages are treated as more legitimate by spam filters.
+      textContent: htmlToText(html),
     });
 
     const messageId = result?.messageId || result?.body?.messageId || "ok";

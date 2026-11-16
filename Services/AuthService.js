@@ -139,7 +139,7 @@ const RegisterService = async(userData)=>{
 
         const emailResult = await sendEmail({
           to: newUser.email,
-          subject: "Verify Your Socket Moni Account",
+          subject: "Your SocketMonnie verification code",
           html: verifyOtpTemplate(newUser.fullName, otp),
         });
 
