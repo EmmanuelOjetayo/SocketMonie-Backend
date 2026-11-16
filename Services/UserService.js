@@ -243,6 +243,8 @@ const ForgotPin = async (reqBody) => {
       const pinResetOTP = await bcrypt.hash(otp, 12);
       const pinResetOTPExpiresAt = expiresAt;
 
+      // Persist the hashed OTP + expiry BEFORE sending the email so a delivery
+      // failure never leaves the member with an email they cannot use.
       const updatedUser = await UserRepository.UpdateDetails(user._id, {
         pinResetOTP,
         pinResetOTPExpiresAt,
@@ -258,7 +260,13 @@ const ForgotPin = async (reqBody) => {
         html: forgotPasswordTemplate(user.fullName, otp), // Reuse template or create new one
       });
       if (!emailResult.success) {
-        throw new AppError( "Failed to send reset email.", 400);
+        // Delivery failed — clear the unusable OTP so the member can request
+        // a fresh one without hitting a stale/invalid state.
+        await UserRepository.UpdateDetails(user._id, {
+          pinResetOTP: null,
+          pinResetOTPExpiresAt: null,
+        });
+        throw new AppError("Failed to send reset email. Please try again.", 400);
       }
     }
 
@@ -274,8 +282,12 @@ const ResetPin = async (reqBody, reqUserID, auditContext = {}) => {
     if (String(user._id) !== String(reqUserID)) {
       throw new AppError("You can only reset the PIN for your own account.", 403);
     }
-    if (!user.pinResetOTP || !user.pinResetOTPExpiresAt || new Date() > user.pinResetOTPExpiresAt) {
-      throw new AppError("OTP expired. Please request a new one.", 400);
+    // Distinguish "no/cleared OTP" from "expired" for a clear member-facing message.
+    if (!user.pinResetOTP || !user.pinResetOTPExpiresAt) {
+      throw new AppError("PIN reset OTP is invalid or has not been requested. Please request a new one.", 400);
+    }
+    if (new Date() > new Date(user.pinResetOTPExpiresAt)) {
+      throw new AppError("OTP has expired. Please request a new one.", 400);
     }
     if ((user.pinResetAttempts || 0) >= PIN_RESET_MAX_ATTEMPTS) {
       throw new AppError("Too many invalid OTP attempts. Please request a new PIN reset.", 429);

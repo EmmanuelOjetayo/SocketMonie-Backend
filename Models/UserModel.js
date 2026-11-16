@@ -175,6 +175,17 @@ thisMonthMinutesUnpaid: {
         type: Boolean,
         default: false,
     },
+    // Transaction PIN forgot/reset OTP (single-use, bcrypt-hashed) and expiry.
+    // These MUST be in the schema so Mongoose persists them (strict mode strips
+    // unknown paths on update/save).
+    pinResetOTP: {
+        type: String,
+        default: null,
+    },
+    pinResetOTPExpiresAt: {
+        type: Date,
+        default: null,
+    },
     // Transaction PIN reset (forgot/recovery) brute-force guard: counts failed
     // OTP verifications and stamps when the counter locks the member out until.
     pinResetAttempts: {
