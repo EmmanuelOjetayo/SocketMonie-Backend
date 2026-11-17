@@ -53,8 +53,12 @@ thisMonthMinutesUnpaid: {
     },
     otp: String,
     otpExpiresAt: Date,
+    otpAttempts: { type: Number, default: 0 },
+    otpAttemptExpiresAt: { type: Date, default: null },
     resetPasswordOTP: String,
     resetPasswordOTPExpiresAt: Date,
+    resetPasswordAttempts: { type: Number, default: 0 },
+    resetPasswordAttemptExpiresAt: { type: Date, default: null },
     status: {
         type: String,
         enum: ["completed", "pending", "failed", "suspended"],

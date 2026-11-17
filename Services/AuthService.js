@@ -21,6 +21,22 @@ const { toSafeUserPayload } = require("../Utilis/userPayload")
 const maskEmail = (email) =>
   String(email || "").replace(/^([^@]{1,2})[^@]*(@.*)$/, "$1********$2");
 
+// Auth OTP brute-force hardening (mirrors PIN reset policy).
+const AUTH_OTP_TTL_MS = 5 * 60 * 1000;
+const AUTH_OTP_MAX_ATTEMPTS = Number(process.env.AUTH_OTP_MAX_ATTEMPTS) || 5;
+const AUTH_OTP_LOCK_MS = Number(process.env.AUTH_OTP_LOCK_MS) || 15 * 60 * 1000;
+
+const isOtpLocked = (attempts, lockedUntil) =>
+  Number(attempts || 0) >= AUTH_OTP_MAX_ATTEMPTS && lockedUntil && new Date() < new Date(lockedUntil);
+
+const recordOtpFailure = async (user, attemptsField, lockField) => {
+  const attempts = Number(user[attemptsField] || 0) + 1;
+  user[attemptsField] = attempts;
+  user[lockField] = attempts >= AUTH_OTP_MAX_ATTEMPTS ? new Date(Date.now() + AUTH_OTP_LOCK_MS) : null;
+  await user.save();
+  return attempts;
+};
+
 // Helper function to generate unique referral code for new member
 const generateUniqueReferralCode = () => {
   return "SM-" + crypto.randomBytes(3).toString("hex").toUpperCase();
@@ -77,9 +93,7 @@ const RegisterService = async(userData)=>{
         const newMemberReferralCode = generateUniqueReferralCode();
         const otp = String(genOTP());
 
-        const otpExpiresAt = new Date(
-        Date.now() + 5 * 60 * 1000
-        );
+        const otpExpiresAt = new Date(Date.now() + AUTH_OTP_TTL_MS);
 
         const hashedOTP = await bcrypt.hash(otp, 12);
 
@@ -96,6 +110,8 @@ const RegisterService = async(userData)=>{
               password: hashedPassword,
               otp: hashedOTP,
               otpExpiresAt,
+              otpAttempts: 0,
+              otpAttemptExpiresAt: null,
               isVerified: false,
               membershipFeePaid: false,
               status: "pending",
@@ -204,17 +220,31 @@ const VerifyOTPService = async({email, otp})=>{
     const foundUser = await AuthRepository.findByEntity("email", email);
     if (!foundUser) throw new AppError( "No account found with this email.", 400);
     if (foundUser.isVerified) throw new AppError("Your account has already been verified, please login", 409);
-    if (!foundUser.otp || !foundUser.otpExpiresAt || new Date() > foundUser.otpExpiresAt) {
+    if (isOtpLocked(foundUser.otpAttempts, foundUser.otpAttemptExpiresAt)) {
+      throw new AppError("Too many invalid verification attempts. Please request a new code.", 429);
+    }
+    if (!foundUser.otp || !foundUser.otpExpiresAt) {
+      throw new AppError("Verification code is invalid or has not been requested. Please request a new one.", 400);
+    }
+    if (new Date() > new Date(foundUser.otpExpiresAt)) {
       throw new AppError("OTP has expired. Please request a new one.", 400);
     }
-    
+
     const isOtpValid = await bcrypt.compare(otp, foundUser.otp);
-    if (!isOtpValid) throw new AppError("Invalid verification code.", 400);
-  
+    if (!isOtpValid) {
+      const attempts = await recordOtpFailure(foundUser, "otpAttempts", "otpAttemptExpiresAt");
+      if (attempts >= AUTH_OTP_MAX_ATTEMPTS) {
+        throw new AppError("Too many invalid verification attempts. Please request a new code.", 429);
+      }
+      throw new AppError("Invalid verification code.", 400);
+    }
+
     await AuthRepository.updateVerifyOTPToMongo(email, foundUser.otp);
     const token =  genJWT(foundUser._id);
 
-    const user = toSafeUserPayload(foundUser);
+    // Re-read to return a safe, up-to-date payload after verification.
+    const verifiedUser = await AuthRepository.findByEntity("email", email);
+    const user = toSafeUserPayload(verifiedUser || foundUser);
 
     return { token, user, verified: true };
 }
@@ -223,12 +253,12 @@ const VerifyOTPService = async({email, otp})=>{
 const ForgotPasswordService = async({email})=>{
   const user = await AuthRepository.findByEntity("email", email);
     if (!user) throw new AppError( "No account found with that email.", 400);
-    
+
     const otp = String(genOTP());
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + AUTH_OTP_TTL_MS);
     const resetPasswordOTP = await bcrypt.hash(otp, 12);
     const savedUser = await AuthRepository.savedUser( email, resetPasswordOTP, expiresAt )
-    
+
 
     const emailResult = await sendEmail({
       to: savedUser.email,
@@ -237,10 +267,19 @@ const ForgotPasswordService = async({email})=>{
     });
     if (!emailResult.success) {
       console.error("Email Error:", emailResult.error);
-      // Don't fail the request - OTP is saved. Email can be retried.
+      // Clear unusable OTP so the user can request a fresh one cleanly.
+      try {
+        savedUser.resetPasswordOTP = null;
+        savedUser.resetPasswordOTPExpiresAt = null;
+        savedUser.resetPasswordAttempts = 0;
+        savedUser.resetPasswordAttemptExpiresAt = null;
+        await savedUser.save();
+      } catch (_) {
+        /* best-effort cleanup */
+      }
       return {
-        success: true,
-        message: "If an account exists with that email, a reset code has been sent.",
+        success: false,
+        message: "Failed to send reset email. Please try again.",
         emailFailed: true,
       };
     }
@@ -253,15 +292,24 @@ const ForgotPasswordService = async({email})=>{
 const ResetPasswordService = async({ email, otp, newPassword }) => {
   const user = await AuthRepository.findByEntity("email", email);
   if (!user) throw new AppError("User not found.", 404);
+  if (isOtpLocked(user.resetPasswordAttempts, user.resetPasswordAttemptExpiresAt)) {
+    throw new AppError("Too many invalid OTP attempts. Please request a new reset code.", 429);
+  }
   if (!user.resetPasswordOTP || !user.resetPasswordOTPExpiresAt) {
     throw new AppError("Password reset OTP is invalid or has expired.", 400);
   }
-  if (new Date() > user.resetPasswordOTPExpiresAt) {
-    throw new AppError("OTP has expired.", 400);
+  if (new Date() > new Date(user.resetPasswordOTPExpiresAt)) {
+    throw new AppError("OTP has expired. Please request a new one.", 400);
   }
 
   const isValid = await bcrypt.compare(otp, user.resetPasswordOTP);
-  if (!isValid) throw new AppError("Invalid OTP.", 400);
+  if (!isValid) {
+    const attempts = await recordOtpFailure(user, "resetPasswordAttempts", "resetPasswordAttemptExpiresAt");
+    if (attempts >= AUTH_OTP_MAX_ATTEMPTS) {
+      throw new AppError("Too many invalid OTP attempts. Please request a new reset code.", 429);
+    }
+    throw new AppError("Invalid OTP.", 400);
+  }
 
   const hashedPassword = await bcrypt.hash(newPassword, 13);
   const updatedUser = await AuthRepository.resetPassword(email, user.resetPasswordOTP, hashedPassword);

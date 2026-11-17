@@ -50,6 +50,8 @@ const updateVerifyOTPToMongo = async (email, expectedOtp) => {
             isVerified: true,
             otp: null,
             otpExpiresAt: null,
+            otpAttempts: 0,
+            otpAttemptExpiresAt: null,
         },
         { new: true, runValidators: true }
     );
@@ -63,6 +65,8 @@ async function savedUser( email, resetPasswordOTP, expiresAt ){
     if (!user) throw new AppError("No account found with that email.", 404);
     user.resetPasswordOTP = resetPasswordOTP;
     user.resetPasswordOTPExpiresAt = expiresAt;
+    user.resetPasswordAttempts = 0;
+    user.resetPasswordAttemptExpiresAt = null;
     await user.save()
     return user;
 }
@@ -77,6 +81,8 @@ async function resetPassword(email, expectedOtp, hashedPassword) {
             password: hashedPassword,
             resetPasswordOTP: null,
             resetPasswordOTPExpiresAt: null,
+            resetPasswordAttempts: 0,
+            resetPasswordAttemptExpiresAt: null,
         },
         { new: true, runValidators: true }
     );

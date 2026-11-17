@@ -30,7 +30,7 @@ async function routeProtect(req, res, next) {
     // fields AND the bcrypt Transaction PIN hash — financial PINs must never
     // travel on the request/user object).
     req.user = await Users.findById(userId).select(
-      "-password -otp -otpExpiresAt -resetPasswordOTP -resetPasswordOTPExpiresAt -pinResetOTP -pinResetOTPExpiresAt -transactionPin"
+      "-password -otp -otpExpiresAt -otpAttempts -otpAttemptExpiresAt -resetPasswordOTP -resetPasswordOTPExpiresAt -resetPasswordAttempts -resetPasswordAttemptExpiresAt -pinResetOTP -pinResetOTPExpiresAt -pinResetAttempts -pinResetAttemptExpiresAt -transactionPin"
     );
 
     if (!req.user) {
