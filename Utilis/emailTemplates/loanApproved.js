@@ -1,27 +1,33 @@
+const { wrapEmail, detailTable, escapeHtml } = require("./layout");
+
 const loanApprovedTemplate = (
   fullName,
   amount,
   repaymentDate
 ) => {
-  return `
-    <div style="font-family:Arial,sans-serif;padding:20px">
+  const name = escapeHtml(fullName);
 
-      <h2>Congratulations ${fullName},</h2>
+  const bodyHtml = `
+            <p style="margin:0 0 14px 0;font-size:14px;line-height:1.65;">Hi ${name},</p>
+            <p style="margin:0 0 18px 0;font-size:14px;line-height:1.65;">
+              Congratulations — your loan request has been approved.
+            </p>
+            ${detailTable([
+              ["Amount approved", `₦${amount}`],
+              ["Repayment date", String(repaymentDate || "—")],
+            ])}
+            <p style="margin:0 0 18px 0;font-size:13px;line-height:1.6;color:#475569;">
+              Please log in to your dashboard to view your repayment schedule and full loan details.
+            </p>
+`;
 
-      <p>Your loan request has been approved.</p>
-
-      <p><strong>Amount:</strong> ₦${amount}</p>
-
-      <p><strong>Repayment Date:</strong> ${repaymentDate}</p>
-
-      <p>Please log in to your dashboard for more details.</p>
-
-      <br/>
-
-      <p>Socket Moni Team</p>
-
-    </div>
-  `;
+  return wrapEmail({
+    heading: "Your loan is approved",
+    bodyHtml,
+    preheader: "Your SocketMonnie loan application has been approved.",
+    tag: "Loans",
+    reason: "your loan application was processed",
+  });
 };
 
 module.exports = loanApprovedTemplate;

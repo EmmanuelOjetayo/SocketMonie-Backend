@@ -1,39 +1,35 @@
+const { wrapEmail, detailTable, escapeHtml } = require("./layout");
+
 const receiptTemplate = (
   fullName,
   amount,
   reference,
   transactionType
 ) => {
-  return `
-    <div style="font-family:Arial,sans-serif;padding:20px">
+  const name = escapeHtml(fullName);
 
-      <h2>Hello ${fullName},</h2>
+  const bodyHtml = `
+            <p style="margin:0 0 14px 0;font-size:14px;line-height:1.65;">Hi ${name},</p>
+            <p style="margin:0 0 18px 0;font-size:14px;line-height:1.65;">
+              Your transaction was successful. Here's your receipt — please keep it for your records.
+            </p>
+            ${detailTable([
+              ["Transaction", String(transactionType || "—")],
+              ["Amount", `₦${amount}`],
+              ["Reference", String(reference || "—")],
+            ])}
+            <p style="margin:0 0 18px 0;font-size:13px;line-height:1.6;color:#475569;">
+              If you didn't authorise this transaction, contact support immediately.
+            </p>
+`;
 
-      <p>Your transaction was successful.</p>
-
-      <table cellpadding="8">
-        <tr>
-          <td><strong>Transaction</strong></td>
-          <td>${transactionType}</td>
-        </tr>
-
-        <tr>
-          <td><strong>Amount</strong></td>
-          <td>₦${amount}</td>
-        </tr>
-
-        <tr>
-          <td><strong>Reference</strong></td>
-          <td>${reference}</td>
-        </tr>
-      </table>
-
-      <br/>
-
-      <p>Thank you for using Socket Moni.</p>
-
-    </div>
-  `;
+  return wrapEmail({
+    heading: "Transaction successful",
+    bodyHtml,
+    preheader: "Your SocketMonnie transaction receipt.",
+    tag: "Receipt",
+    reason: "a transaction was completed on your account",
+  });
 };
 
 module.exports = receiptTemplate;

@@ -257,7 +257,7 @@ const ForgotPin = async (reqBody) => {
       const emailResult = await sendEmail({
         to: user.email,
         subject: "Reset Your Transaction PIN",
-        html: forgotPasswordTemplate(user.fullName, otp), // Reuse template or create new one
+        html: forgotPasswordTemplate(user.fullName, otp, "transaction PIN"), // Reuse template for the PIN reset flow
       });
       if (!emailResult.success) {
         // Delivery failed — clear the unusable OTP so the member can request
