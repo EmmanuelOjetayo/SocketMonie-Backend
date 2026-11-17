@@ -407,7 +407,26 @@ const ChangePinService = async (reqBody, reqUserID, auditContext = {}) => {
 
 
 const UpdateProfile = async (reqBody, reqUserID) => {
-    const user = await UserRepository.UpdateDetails(reqUserID, reqBody);
+    // Defensive allowlist: this endpoint is not routed, but must never accept
+    // privileged/sensitive fields (role, status, balances, PIN, OTP, etc.) if wired up.
+    const ALLOWED_PROFILE_FIELDS = new Set([
+      "fullName",
+      "phone",
+      "dateOfBirth",
+      "gender",
+      "address",
+      "stateOfOrigin",
+      "occupation",
+      "monthlySavingsCommitment",
+    ]);
+    const safeUpdate = {};
+    for (const [k, v] of Object.entries(reqBody || {})) {
+      if (ALLOWED_PROFILE_FIELDS.has(k)) safeUpdate[k] = v;
+    }
+    if (Object.keys(safeUpdate).length === 0) {
+      throw new AppError("No valid profile fields provided.", 400);
+    }
+    const user = await UserRepository.UpdateDetails(reqUserID, safeUpdate);
     if (!user) throw new AppError("User not found", 404);
     return { user };
 }
@@ -415,6 +434,23 @@ const UpdateProfile = async (reqBody, reqUserID) => {
 const UpdatePersonalInfo = async (reqBody, reqUserID) => {
     const user = await UserRepository.findUserDetails(reqUserID);
     if (!user) throw new AppError("User not found", 404);
+
+    // Defensive allowlist (middleware also validates/strips). Never permit
+    // privilege escalation or financial/secret field mutation via this path.
+    const ALLOWED_PERSONAL_FIELDS = new Set([
+      "fullName",
+      "phone",
+      "dateOfBirth",
+      "gender",
+      "address",
+      "stateOfOrigin",
+      "occupation",
+      "monthlySavingsCommitment",
+    ]);
+    const safeUpdate = {};
+    for (const [k, v] of Object.entries(reqBody || {})) {
+      if (ALLOWED_PERSONAL_FIELDS.has(k)) safeUpdate[k] = v;
+    }
 
     // KYC approval lock (owner-approved decision): identity / residential
     // fields captured during onboarding become read-only once the member's
@@ -428,13 +464,17 @@ const UpdatePersonalInfo = async (reqBody, reqUserID) => {
         "occupation",
     ];
     const attemptedLockedFields = LOCKED_IDENTITY_FIELDS.filter(
-        (field) => reqBody && reqBody[field] !== undefined
+        (field) => safeUpdate[field] !== undefined
     );
     if (isKycLocked(user.kycStatus) && attemptedLockedFields.length > 0) {
         throw new AppError(KYC_LOCKED_MESSAGE, 403);
     }
 
-    const updatedUser = await UserRepository.UpdateDetails(reqUserID, reqBody);
+    if (Object.keys(safeUpdate).length === 0) {
+      throw new AppError("No valid personal information fields provided.", 400);
+    }
+
+    const updatedUser = await UserRepository.UpdateDetails(reqUserID, safeUpdate);
     if (!updatedUser) throw new AppError("User not found", 404);
     return { user: updatedUser };
 }

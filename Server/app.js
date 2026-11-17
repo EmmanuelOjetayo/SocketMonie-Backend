@@ -176,18 +176,16 @@ app.use(mongoSanitize);
 const { csrfProtect } = require("../Middleware/csrfProtect");
 app.use(csrfProtect);
 
-// Global rate limiter: 100 requests per 5 minutes (webhook excluded)
+// Global rate limiter: requests per window (webhook excluded).
 // CORS/preflight is handled BEFORE this middleware.
-// Debug endpoint: POST /_debug/reset-ratelimit to reset the store
 app.use(globalLimiter);
 
+// Test/dev-only hook to clear rate-limit buckets for automated suites.
+// Disabled in production to prevent brute-force/rate-limit bypass.
 app.post("/_debug/reset-ratelimit", (req, res) => {
-  // express-rate-limit v8 keeps its store private and exposes `resetKey()`
-  // on the limiter instance. The previous implementation called
-  // `limiter.store.reset()`, which does not exist on v8 — so this endpoint
-  // answered "success" while clearing nothing, leaving callers throttled.
-  // The key is `req.ip`, which is exactly what the default key generator
-  // uses for the request being reset.
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ success: false, message: "Not found" });
+  }
   const key = req.ip;
   const limiters = [globalLimiter, financialLimiter, adminLimiter];
   const reset = limiters.map((limiter) => {
@@ -252,13 +250,6 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/transactions", transactionRoutes);
 
 app.use("/api/settings", systemSettingsRoutes);
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
 // ==========================================================================
 // 9. HEALTH CHECK
 // ==========================================================================
@@ -274,8 +265,9 @@ app.get("/", (req, res) => {
 app.get("/api/health", (req, res) => {
   const flwSecretHashConfigured = !!(process.env.FLW_SECRET_HASH || process.env.FLW_WEBHOOK_SECRET);
   if (!flwSecretHashConfigured) {
-    console.error("❌ CRITICAL: FLW_SECRET_HASH is not configured. Webhook signature verification will be disabled. Set FLW_SECRET_HASH or FLW_WEBHOOK_SECRET in .env");
-    process.exit(1);
+    // Never crash the process on a health probe; surface the misconfiguration so
+    // operators can alert on it without turning a single bad deploy into a DoS.
+    console.error("❌ CRITICAL: FLW_SECRET_HASH is not configured. Webhook signature verification cannot run until it is set.");
   }
   // Report only the Flutterwave credential MODE (test/live), never values.
   // A public/secret mode mismatch silently degrades Inline checkout to the
@@ -284,9 +276,9 @@ app.get("/api/health", (req, res) => {
   const sec = String(process.env.FLW_SECRET_KEY || process.env.FLWSECK || "");
   const pubTest = /_TEST/i.test(pub);
   const secTest = /_TEST/i.test(sec);
-  res.status(200).json({
-    success: true,
-    message: "API is healthy",
+  res.status(flwSecretHashConfigured ? 200 : 503).json({
+    success: flwSecretHashConfigured,
+    message: flwSecretHashConfigured ? "API is healthy" : "API running but FLW webhook secret hash is not configured",
     flwSecretHashConfigured,
     flutterwave: {
       publicKeyMode: pubTest ? "test" : pub ? "live" : "missing",
