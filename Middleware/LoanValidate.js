@@ -2,8 +2,10 @@ const Joi = require("joi");
 const AppError = require("../Utilis/AppError");
 const formatValidationError = require("../Utilis/formatValidationError");
 
+const MAX_TRANSACTION_AMOUNT = 50000000;
+
 const applyLoanSchema = Joi.object({
-  amount: Joi.number().positive().min(100).required(),
+  amount: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
   durationMonths: Joi.number().integer().min(1).max(12).required(),
   loanType: Joi.string().trim().valid("cooperative", "emergency", "personal", "business").default("cooperative"),
   disbursementMethod: Joi.string().trim().optional(),
@@ -27,7 +29,7 @@ const replaceGuarantorSchema = Joi.object({
 
 const repayInitializeSchema = Joi.object({
   loanId: Joi.string().trim().required(),
-  paymentAmount: Joi.number().positive().min(100).required(),
+  paymentAmount: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
 });
 
 const repayVerifySchema = Joi.object({

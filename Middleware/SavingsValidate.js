@@ -2,8 +2,10 @@ const Joi = require("joi");
 const AppError = require("../Utilis/AppError");
 const formatValidationError = require("../Utilis/formatValidationError");
 
+const MAX_TRANSACTION_AMOUNT = 50000000;
+
 const withdrawRequestSchema = Joi.object({
-  amount: Joi.number().positive().min(100).required(),
+  amount: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
   accountNumber: Joi.string().trim().pattern(/^\d{10}$/).required().messages({
     "string.pattern.base": "Account number must be a valid 10-digit NUBAN number.",
   }),
@@ -13,7 +15,7 @@ const withdrawRequestSchema = Joi.object({
 });
 
 const directWithdrawSchema = Joi.object({
-  amount: Joi.number().positive().min(100).required(),
+  amount: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
   pin: Joi.string().trim().required(),
   method: Joi.string().trim().optional(),
   bankDetails: Joi.object().optional(),
@@ -21,7 +23,7 @@ const directWithdrawSchema = Joi.object({
 
 const tierCommitmentSchema = Joi.object({
   newTier: Joi.string().trim().valid("bronze", "silver", "gold", "platinum", "Bronze", "Silver", "Gold", "Platinum").required(),
-  newCommitment: Joi.number().positive().required(),
+  newCommitment: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
 });
 
 const verifyMembershipFeeSchema = Joi.object({

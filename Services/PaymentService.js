@@ -559,10 +559,37 @@ const handleRepaymentWebhook = async (data) => {
     console.log("[REPAYMENT WEBHOOK] ✗ missing reference or transaction id — ignoring event");
     return;
   }
+  const isTerminalFailureStatus = ["failed", "cancelled", "canceled", "error", "declined", "abandoned"].includes(status);
+
   if (!isSuccessfulStatus(status)) {
-    console.log(`[REPAYMENT WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
+    if (!isTerminalFailureStatus) {
+      console.log(`[REPAYMENT WEBHOOK] ✗ non-successful/non-terminal status "${status}" — ignoring event`);
+      return;
+    }
+    // Persist terminal failure for pending repayments without attempting settlement.
+    const repayment = await PaymentRepository.findRepaymentByReference(reference);
+    if (!repayment) {
+      console.log(`[REPAYMENT WEBHOOK] ✗ no matching repayment record for failed ref ${reference}`);
+      return;
+    }
+    if (repayment.status === "successful") {
+      console.log(`[REPAYMENT WEBHOOK] ✗ repayment already successful for failed ref ${reference} — ignoring`);
+      return;
+    }
+    if (repayment.status !== "failed") {
+      repayment.status = "failed";
+      await repayment.save();
+      await createNotification({
+        userId: repayment.userId,
+        type: "loan",
+        title: "Loan Repayment Failed",
+        message: `Your loan repayment of ₦${(settledAmount || repayment.amount).toLocaleString()} failed. Please try again.`,
+      });
+    }
+    console.log(`[REPAYMENT WEBHOOK] ✔ finished (failed) | ref: ${reference} | repayment marked failed`);
     return;
   }
+
   // Re-verify before crediting a loan (FLW best practice).
   try {
     const verified = await verifyTransactionById(transactionId);
@@ -599,62 +626,50 @@ const handleRepaymentWebhook = async (data) => {
     return;
   }
 
-  if (isSuccessfulStatus(status)) {
-    console.log(
-      `[REPAYMENT WEBHOOK] ③ updating loan ${repayment.loanId} | userId: ${repayment.userId} | amount: ${settledAmount || repayment.amount}`
-    );
-    await processLoanRepayment({
-      loanId: repayment.loanId,
-      transactionId: String(transactionId),
-      paymentAmount: settledAmount || repayment.amount,
-      paymentReference: reference,
-      paymentMethod: "flutterwave",
-      verifiedData: data,
-    });
+  console.log(
+    `[REPAYMENT WEBHOOK] ③ updating loan ${repayment.loanId} | userId: ${repayment.userId} | amount: ${settledAmount || repayment.amount}`
+  );
+  await processLoanRepayment({
+    loanId: repayment.loanId,
+    transactionId: String(transactionId),
+    paymentAmount: settledAmount || repayment.amount,
+    paymentReference: reference,
+    paymentMethod: "flutterwave",
+    verifiedData: data,
+  });
 
-    await createNotification({
-      userId: repayment.userId,
-      type: "loan",
-      title: "Loan Repayment Successful",
-      message: `Your loan repayment of ₦${(settledAmount || repayment.amount).toLocaleString()} was successful.`,
-    });
-    await logAudit({
-      userId: repayment.userId,
-      action: "loan_repay",
-      targetType: "loan",
-      targetId: repayment.loanId,
-      details: { amount: settledAmount || repayment.amount, reference },
-    });
+  await createNotification({
+    userId: repayment.userId,
+    type: "loan",
+    title: "Loan Repayment Successful",
+    message: `Your loan repayment of ₦${(settledAmount || repayment.amount).toLocaleString()} was successful.`,
+  });
+  await logAudit({
+    userId: repayment.userId,
+    action: "loan_repay",
+    targetType: "loan",
+    targetId: repayment.loanId,
+    details: { amount: settledAmount || repayment.amount, reference },
+  });
 
-    // Dual-write: dedicated loan transaction record (idempotent by reference).
-    await recordLoanTransaction({
-      userId: repayment.userId,
-      loanId: repayment.loanId,
-      type: "loan_repayment",
-      reference,
-      transactionId: String(transactionId),
-      amount: settledAmount || repayment.amount,
-      currency: "NGN",
-      status: "completed",
-      method: "flutterwave",
-      paidAt: new Date(),
-      metadata: { source: "repaymentWebhook" },
-    });
+  // Dual-write: dedicated loan transaction record (idempotent by reference).
+  await recordLoanTransaction({
+    userId: repayment.userId,
+    loanId: repayment.loanId,
+    type: "loan_repayment",
+    reference,
+    transactionId: String(transactionId),
+    amount: settledAmount || repayment.amount,
+    currency: "NGN",
+    status: "completed",
+    method: "flutterwave",
+    paidAt: new Date(),
+    metadata: { source: "repaymentWebhook" },
+  });
 
-    console.log(
-      `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${settledAmount || repayment.amount} | user notified + audit logged`
-    );
-  } else {
-    repayment.status = "failed";
-    await repayment.save();
-    console.log(`[REPAYMENT WEBHOOK] ✔ finished (failed) | ref: ${reference} | repayment marked failed + user notified`);
-    await createNotification({
-      userId: repayment.userId,
-      type: "loan",
-      title: "Loan Repayment Failed",
-      message: `Your loan repayment of ₦${(settledAmount || repayment.amount).toLocaleString()} failed. Please try again.`,
-    });
-  }
+  console.log(
+    `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${settledAmount || repayment.amount} | user notified + audit logged`
+  );
 };
 
 const handleMembershipFeeWebhook = async (data) => {

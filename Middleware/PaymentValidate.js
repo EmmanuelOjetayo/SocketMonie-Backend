@@ -13,8 +13,10 @@ const maskAccount = (num) => {
   return `${s.slice(0, 4)}****${s.slice(-4)} (len=${s.length})`;
 };
 
+const MAX_TRANSACTION_AMOUNT = 50000000;
+
 const initiateDepositSchema = Joi.object({
-  amount: Joi.number().positive().min(100).required(),
+  amount: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
   method: Joi.string().trim().optional(),
 });
 
