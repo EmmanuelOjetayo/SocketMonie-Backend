@@ -27,6 +27,7 @@ const LoanTransaction = require("../Models/LoanTransactionModel");
 const MinuteTransaction = require("../Models/MinuteTransactionModel");
 const MembershipTransaction = require("../Models/MembershipTransactionModel");
 const SavingsTransaction = require("../Models/SavingsTransactionModel");
+const { sendPaymentReceiptSafe } = require("./ReceiptService");
 
 const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
@@ -184,6 +185,18 @@ const verifyDeposit = async (userId, ref, transactionId) => {
     method: savings.method || "flutterwave",
     paidAt: new Date(),
     metadata: { savingsId: String(savings._id), source: "verifyDeposit" },
+  });
+
+  // Receipt: exactly-once email for the settled deposit (idempotent claim).
+  await sendPaymentReceiptSafe({
+    userId: savings.userId,
+    Model: SavingsTransaction,
+    type: savings.type === "withdrawal" ? "withdrawal" : "deposit",
+    reference: savings.reference || lookupRef,
+    transactionId: String(data.id),
+    amount: savings.amount,
+    currency: "NGN",
+    paidAt: new Date(),
   });
 
   await updateUserScore(savings.userId, "deposit");
@@ -361,6 +374,18 @@ const handleDepositWebhook = async (data) => {
       method: savings.method || "flutterwave",
       paidAt: new Date(),
       metadata: { savingsId: String(savings._id), source: "depositWebhook" },
+    });
+
+    // Receipt: exactly-once email for the settled deposit (idempotent claim).
+    await sendPaymentReceiptSafe({
+      userId: savings.userId,
+      Model: SavingsTransaction,
+      type: savings.type === "withdrawal" ? "withdrawal" : "deposit",
+      reference: savings.reference || reference,
+      transactionId: String(transactionId),
+      amount: finalAmount,
+      currency: "NGN",
+      paidAt: new Date(),
     });
 
     await updateUserScore(savings.userId, "deposit");
@@ -667,6 +692,18 @@ const handleRepaymentWebhook = async (data) => {
     metadata: { source: "repaymentWebhook" },
   });
 
+  // Receipt: exactly-once email for the settled repayment (idempotent claim).
+  await sendPaymentReceiptSafe({
+    userId: repayment.userId,
+    Model: LoanTransaction,
+    type: "loan_repayment",
+    reference,
+    transactionId: String(transactionId),
+    amount: settledAmount || repayment.amount,
+    currency: "NGN",
+    paidAt: new Date(),
+  });
+
   console.log(
     `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${settledAmount || repayment.amount} | user notified + audit logged`
   );
@@ -745,6 +782,18 @@ const handleMembershipFeeWebhook = async (data) => {
     method: "flutterwave",
     paidAt: user.membershipFeePaidAt || new Date(),
     metadata: { source: "membershipWebhook" },
+  });
+
+  // Receipt: exactly-once email for the settled fee (idempotent claim).
+  await sendPaymentReceiptSafe({
+    userId: user._id,
+    Model: MembershipTransaction,
+    type: "membership_fee",
+    reference: String(user.membershipFeeTxRef || reference),
+    transactionId: String(transactionId),
+    amount: MEMBERSHIP_FEE_AMOUNT,
+    currency: "NGN",
+    paidAt: user.membershipFeePaidAt || new Date(),
   });
 
   await createNotification({
@@ -1084,6 +1133,19 @@ const handleMinuteWebhook = async (data) => {
       monthsSettled: settledCount,
       resolvedVia: pendingPayment ? "reference-record" : "fallback-chain",
     },
+  });
+
+  // Receipt: exactly-once email for the settled contribution (idempotent claim).
+  await sendPaymentReceiptSafe({
+    userId,
+    Model: MinuteTransaction,
+    type: "minute_contribution",
+    reference,
+    transactionId: String(transactionId),
+    amount: Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount),
+    currency: "NGN",
+    paidAt: new Date(),
+    monthsSettled: settledCount,
   });
 
   // SocketScore: minutes payment is verified financial activity — recalc

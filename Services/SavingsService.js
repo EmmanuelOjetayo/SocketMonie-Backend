@@ -7,6 +7,8 @@ const { updateUserScore } = require("../Utilis/scoreService");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const { ReferralService } = require("./ReferralService");
 const { recordMembershipTransaction } = require("./TransactionService");
+const MembershipTransaction = require("../Models/MembershipTransactionModel");
+const { sendPaymentReceiptSafe } = require("./ReceiptService");
 const AppError = require("../Utilis/AppError");
 const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
 const { isSuccessfulStatus } = require("../Utilis/paymentStatus");
@@ -438,6 +440,18 @@ const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, 
       method: "flutterwave",
       paidAt: user.membershipFeePaidAt || new Date(),
       metadata: { source: "verifyMembershipFee" },
+    });
+
+    // Receipt: exactly-once email for the settled fee (idempotent claim).
+    await sendPaymentReceiptSafe({
+      userId,
+      Model: MembershipTransaction,
+      type: "membership_fee",
+      reference: String(flwTxRef || paymentRef),
+      transactionId: String(payment?.id || txId || flwTxRef || paymentRef),
+      amount: MEMBERSHIP_FEE_AMOUNT,
+      currency: "NGN",
+      paidAt: user.membershipFeePaidAt || new Date(),
     });
 
     // SocketScore: membership fee is verified financial activity.

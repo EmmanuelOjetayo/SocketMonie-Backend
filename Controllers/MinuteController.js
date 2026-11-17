@@ -14,6 +14,7 @@ const {
 const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 const MinuteTransaction = require("../Models/MinuteTransactionModel");
 const { isSuccessfulStatus } = require("../Utilis/paymentStatus");
+const { sendPaymentReceiptSafe } = require("../Services/ReceiptService");
 const { recordMinuteTransaction } = require("../Services/TransactionService");
 const { updateUserScore } = require("../Utilis/scoreService");
 
@@ -1161,6 +1162,19 @@ exports.verifyMinutes = async (
         grossAmount,
         settledAmount: settledNaira,
       },
+    });
+
+    // Receipt: exactly-once email for the settled contribution (idempotent claim).
+    await sendPaymentReceiptSafe({
+      userId,
+      Model: MinuteTransaction,
+      type: "minute_contribution",
+      reference: ref,
+      transactionId: String(flwData.id),
+      amount: paidNaira,
+      currency: "NGN",
+      paidAt: new Date(),
+      monthsSettled: settledMinutes.length,
     });
 
     // SocketScore: minutes payment is verified financial activity — recalc

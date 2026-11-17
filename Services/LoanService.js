@@ -7,6 +7,8 @@ const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const { recordLoanTransaction } = require("./TransactionService");
+const LoanTransaction = require("../Models/LoanTransactionModel");
+const { sendPaymentReceiptSafe } = require("./ReceiptService");
 const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const { runLoanDefaulterEscalation } = require("../Utilis/loanDefaulterEngine");
 const AppError = require("../Utilis/AppError");
@@ -1226,6 +1228,18 @@ const verifyLoanRepayment = async ({ userId, loanId, reference, tx_ref, transact
     method: "flutterwave",
     paidAt: new Date(),
     metadata: { source: "verifyLoanRepayment" },
+  });
+
+  // Receipt: exactly-once email for the settled repayment (idempotent claim).
+  await sendPaymentReceiptSafe({
+    userId,
+    Model: LoanTransaction,
+    type: "loan_repayment",
+    reference: paymentReference,
+    transactionId: String(payment.id || paymentRef),
+    amount: paymentAmount,
+    currency: "NGN",
+    paidAt: new Date(),
   });
 
   return updatedLoan;
