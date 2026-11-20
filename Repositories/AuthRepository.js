@@ -60,6 +60,24 @@ const updateVerifyOTPToMongo = async (email, expectedOtp) => {
     return response;
 }
 
+const updateResendVerificationOtp = async (email, hashedOtp, expiresAt) => {
+    return await Users.findOneAndUpdate(
+        {
+            email: email.trim().toLowerCase(),
+            isVerified: false,
+        },
+        {
+            $set: {
+                otp: hashedOtp,
+                otpExpiresAt: expiresAt,
+                otpAttempts: 0,
+                otpAttemptExpiresAt: null,
+            },
+        },
+        { new: true, runValidators: true }
+    );
+}
+
 async function savedUser( email, resetPasswordOTP, expiresAt ){
     const user = await Users.findOne({ email: email.trim().toLowerCase() });
     if (!user) throw new AppError("No account found with that email.", 404);
@@ -92,6 +110,7 @@ const AuthRepository = {
     findByEntity,
     createUserIntoDB,
     updateVerifyOTPToMongo,
+    updateResendVerificationOtp,
     savedUser,
     resetPassword
     

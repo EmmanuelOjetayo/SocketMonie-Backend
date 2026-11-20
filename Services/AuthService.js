@@ -167,7 +167,7 @@ const RegisterService = async(userData)=>{
             `[auth][register] ❌ OTP email delivery FAILED for user id=${newUser._id}: ${emailResult.error || "unknown vendor error"}`
           );
           const cause = emailResult.error ? ` (cause: ${emailResult.error})` : "";
-          throw new AppError(`Account created but verification email could not be sent.${cause}`, 502);
+          throw new AppError(`Account created but verification email could not be sent. Please check your inbox or spam/junk folder, or try resending the code.${cause}`, 502);
         }
 
         console.log(
@@ -249,6 +249,46 @@ const VerifyOTPService = async({email, otp})=>{
     return { token, user, verified: true };
 }
 
+const ResendOTPService = async({ email }) => {
+  const user = await AuthRepository.findByEntity("email", email);
+  if (!user) throw new AppError("No account found with this email.", 400);
+  if (user.isVerified) throw new AppError("Your account has already been verified. Please log in.", 409);
+
+  const otp = String(genOTP());
+  const expiresAt = new Date(Date.now() + AUTH_OTP_TTL_MS);
+  const hashedOTP = await bcrypt.hash(otp, 12);
+
+  const updated = await AuthRepository.updateResendVerificationOtp(email, hashedOTP, expiresAt);
+  if (!updated) throw new AppError("Unable to resend verification code right now. Please try again.", 400);
+
+  const emailResult = await sendEmail({
+    to: updated.email,
+    subject: "Your SocketMonnie verification code",
+    html: verifyOtpTemplate(updated.fullName, otp),
+  });
+
+  if (!emailResult.success) {
+    console.error(`[auth][resend-otp] ❌ OTP email delivery FAILED for ${maskEmail(updated.email)}: ${emailResult.error || "unknown vendor error"}`);
+    // Clear unusable OTP so a fresh resend can be requested cleanly.
+    try {
+      updated.otp = null;
+      updated.otpExpiresAt = null;
+      updated.otpAttempts = 0;
+      updated.otpAttemptExpiresAt = null;
+      await updated.save();
+    } catch (_) {
+      /* best-effort cleanup */
+    }
+    const cause = emailResult.error ? ` (cause: ${emailResult.error})` : "";
+    throw new AppError(`Verification code could not be sent. Please try again.${cause}`, 502);
+  }
+
+  console.log(`[auth][resend-otp] ✅ OTP email delivered to ${maskEmail(updated.email)} (messageId=${emailResult.messageId || "ok"})`);
+  return {
+    success: true,
+    message: "A new verification code has been sent to your email. Please check your inbox or spam/junk folder if you don't see it.",
+  };
+}
 
 const ForgotPasswordService = async({email})=>{
   const user = await AuthRepository.findByEntity("email", email);
@@ -279,13 +319,14 @@ const ForgotPasswordService = async({email})=>{
       }
       return {
         success: false,
-        message: "Failed to send reset email. Please try again.",
+        message: "Failed to send reset email. Please try again and check your inbox or spam/junk folder.",
         emailFailed: true,
       };
     }
 
     return {
-      success:true
+      success:true,
+      message: "Password reset OTP sent to your email. Please check your inbox or spam/junk folder if you don't see it.",
     }
 }
 
@@ -296,10 +337,10 @@ const ResetPasswordService = async({ email, otp, newPassword }) => {
     throw new AppError("Too many invalid OTP attempts. Please request a new reset code.", 429);
   }
   if (!user.resetPasswordOTP || !user.resetPasswordOTPExpiresAt) {
-    throw new AppError("Password reset OTP is invalid or has expired.", 400);
+    throw new AppError("Password reset OTP is invalid or has expired. Please request a new code.", 400);
   }
   if (new Date() > new Date(user.resetPasswordOTPExpiresAt)) {
-    throw new AppError("OTP has expired. Please request a new one.", 400);
+    throw new AppError("OTP has expired. Please request a new one and check your inbox or spam/junk folder.", 400);
   }
 
   const isValid = await bcrypt.compare(otp, user.resetPasswordOTP);
@@ -308,7 +349,7 @@ const ResetPasswordService = async({ email, otp, newPassword }) => {
     if (attempts >= AUTH_OTP_MAX_ATTEMPTS) {
       throw new AppError("Too many invalid OTP attempts. Please request a new reset code.", 429);
     }
-    throw new AppError("Invalid OTP.", 400);
+    throw new AppError("Invalid OTP. Please check the code and try again, or request a new one.", 400);
   }
 
   const hashedPassword = await bcrypt.hash(newPassword, 13);
@@ -320,6 +361,7 @@ const AuthService ={
     RegisterService,
     LoginService,
     VerifyOTPService,
+    ResendOTPService,
     ForgotPasswordService,
     ResetPasswordService
 }

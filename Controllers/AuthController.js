@@ -43,7 +43,7 @@ const Register = async (req, res, next) => {
 
     return res.status(201).json({
       success: true,
-      message: "Account created successfully. Please verify your email.",
+      message: "Account created successfully. Please verify your email. Check your inbox or spam/junk folder if you don't see the code.",
       data: { ...response, csrfToken },
     });
   } catch (error) { next(error); }
@@ -67,8 +67,23 @@ const VerifyOtp = async (req, res, next) => {
 const ForgotPassword = async (req, res, next) => {
   try {
     const result = await AuthService.ForgotPasswordService(req.body);
+    if (result.success) {
+      return res.status(200).json({
+        success: true,
+        message: result.message || "Password reset OTP sent to your email. Please check your inbox or spam/junk folder if you don't see it.",
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      message: result.message || "Failed to send reset email. Please try again.",
+    });
+  } catch (error) { next(error); }
+};
 
-    result.success ? res.status(200).json({ success: true, message: "Password reset OTP sent to your email." }) : res.status(400).json({ success: false, message: "Invalid OTP." });
+const ResendOtp = async (req, res, next) => {
+  try {
+    const result = await AuthService.ResendOTPService(req.body);
+    return res.status(200).json({ success: true, message: result.message });
   } catch (error) { next(error); }
 };
 
@@ -113,4 +128,4 @@ const IssueCsrf = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { Login, Register, VerifyOtp, ForgotPassword, ResetPassword, Logout, IssueCsrf };
+module.exports = { Login, Register, VerifyOtp, ForgotPassword, ResetPassword, Logout, IssueCsrf, ResendOtp };

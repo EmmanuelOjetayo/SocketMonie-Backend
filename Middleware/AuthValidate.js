@@ -64,7 +64,7 @@ const RegisterValidate = async(req, res, next)=>{
 
 
 const verifyOtpSchema = joi.object({ 
-  email: joi.string().email().required(), 
+  email: joi.string().trim().email().lowercase().required(), 
   otp: joi.string().length(4).required() 
 });
 
@@ -78,9 +78,22 @@ const VerifyOtpValidate = async(req, res, next)=>{
       next()
 }
 
+const resendOtpSchema = joi.object({
+  email: joi.string().trim().email().lowercase().required(),
+});
+
+const ResendOtpValidate = async (req, res, next) => {
+  const { error, value } = resendOtpSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
+  if (error) {
+    throw new AppError(formatValidationError(error), 400);
+  }
+  req.body = value;
+  next();
+}
 
 
-const forgotPasswordSchema = joi.object({ email: joi.string().email().required() });
+
+const forgotPasswordSchema = joi.object({ email: joi.string().trim().email().lowercase().required() });
 const ForgotPassValidate = async(req, res, next) =>{   
   const { error, value } = forgotPasswordSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
       if (error) {
@@ -117,6 +130,7 @@ const AuthValidator = {
     LoginValidate,
     RegisterValidate,
     VerifyOtpValidate,
+    ResendOtpValidate,
     ForgotPassValidate,
     ResetPasswordValidate
 }

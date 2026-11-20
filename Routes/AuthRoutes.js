@@ -1,5 +1,5 @@
 const express = require("express");
-const { Login, Register, VerifyOtp, ForgotPassword, ResetPassword, Logout, IssueCsrf } = require("../Controllers/AuthController");
+const { Login, Register, VerifyOtp, ForgotPassword, ResetPassword, Logout, IssueCsrf, ResendOtp } = require("../Controllers/AuthController");
 const AuthRoutes = express.Router();
 const {AuthValidator} = require("../Middleware/AuthValidate")
 const { financialLimiter } = require("../Middleware/rateLimiter");
@@ -12,6 +12,7 @@ AuthRoutes.get("/csrf", IssueCsrf);
 AuthRoutes.post("/login", financialLimiter, AuthValidator.LoginValidate, Login);
 AuthRoutes.post("/register", financialLimiter, AuthValidator.RegisterValidate, Register);
 AuthRoutes.post("/verify-otp", financialLimiter, AuthValidator.VerifyOtpValidate, VerifyOtp);
+AuthRoutes.post("/resend-otp", financialLimiter, AuthValidator.ResendOtpValidate, ResendOtp);
 AuthRoutes.post("/forgot-password", financialLimiter, AuthValidator.ForgotPassValidate, ForgotPassword);
 AuthRoutes.post("/reset-password", financialLimiter, AuthValidator.ResetPasswordValidate, ResetPassword);
 AuthRoutes.post("/logout", Logout);

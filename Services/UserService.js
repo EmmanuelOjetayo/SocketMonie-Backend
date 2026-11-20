@@ -266,7 +266,7 @@ const ForgotPin = async (reqBody) => {
     }
 
     // Generic success — do not reveal account existence.
-    return { success: true, message: "If an account exists for that email, a PIN reset OTP has been sent." };
+    return { success: true, message: "If an account exists for that email, a PIN reset OTP has been sent. Please check your inbox or spam/junk folder if you don't see it." };
 }
 
 const ResetPin = async (reqBody, reqUserID, auditContext = {}) => {

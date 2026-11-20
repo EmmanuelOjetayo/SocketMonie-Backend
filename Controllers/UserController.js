@@ -183,9 +183,12 @@ const updateBankDetails = async (req,res)=>{
 // Forgot PIN
 const forgotPin = async (req, res) => {
   try {
-    await UserService.ForgotPin(req.body)
+    const result = await UserService.ForgotPin(req.body);
 
-    return res.status(200).json({ success: true, message: "PIN reset OTP sent to your email." });
+    return res.status(200).json({
+      success: true,
+      message: result?.message || "If an account exists for that email, a PIN reset OTP has been sent. Please check your inbox or spam/junk folder if you don't see it.",
+    });
   } catch (err) {
     return res.status(err.statusCode || 500).json({ success: false, message: err.message });
   }

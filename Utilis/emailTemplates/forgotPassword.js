@@ -14,6 +14,9 @@ const forgotPasswordTemplate = (fullName, otp, context = "password") => {
               Enter the code below to continue. For your security, this code expires in <strong>5 minutes</strong>.
             </p>
             ${codeBlock(otp)}
+            <p style="margin:0 0 10px 0;font-size:13px;line-height:1.6;color:#475569;">
+              If you don't see this email in your inbox, please check your spam/junk folder.
+            </p>
             <p style="margin:0 0 18px 0;font-size:13px;line-height:1.6;color:#475569;">
               If you didn't request this, you can safely ignore this email — your ${escapeHtml(what)} will remain unchanged and no action will be taken.
             </p>
