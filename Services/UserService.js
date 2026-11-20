@@ -23,7 +23,6 @@ const UserInfo = async(id)=>{
     if (!userData) return null
 
 
-    userData.bvn = maskId(userData.bvn);
     userData.nin = maskId(userData.nin);
     // Canonical API field for TopHeader/Profile — never expose Cloudinary secrets.
     userData.avatarUrl = userData.avatarUrl || userData.selfieUrl || null;
@@ -141,14 +140,12 @@ const KYCUploadService = async (reqBody, file, reqUserID) => {
 
   if (!file?.path) throw new AppError('Uploaded document could not be stored', 400);
 
-  // Owner-approved KYC policy: NIN is mandatory, BVN is optional.
+  // KYC policy: NIN is the sole national identity number collected.
   const nin = reqBody.nin ? String(reqBody.nin).trim() : null;
-  const bvn = reqBody.bvn ? String(reqBody.bvn).trim() : null;
   if (!nin) throw new AppError('Your NIN is required to verify your identity.', 400);
-  if (bvn && !/^\d{11}$/.test(bvn)) throw new AppError('BVN must be exactly 11 digits.', 400);
 
-  // No duplicate identity records across accounts (owner-approved decision).
-  const duplicate = await UserRepository.findUserWithIdentityValue(reqUserID, { nin, bvn });
+  // No duplicate identity records across accounts.
+  const duplicate = await UserRepository.findUserWithIdentityValue(reqUserID, { nin });
   if (duplicate) {
     throw new AppError('This identity number is already linked to another member account.', 409);
   }
@@ -162,7 +159,6 @@ const KYCUploadService = async (reqBody, file, reqUserID) => {
     };
 
   if (nin) updateData.nin = nin;
-  if (bvn) updateData.bvn = bvn;
   let updatedUser;
   try {
     updatedUser = await UserRepository.UpdateDetails(reqUserID, updateData, { includeSensitive: true });
@@ -184,7 +180,6 @@ const KYCUploadService = async (reqBody, file, reqUserID) => {
         documentType: updatedUser.documentType, 
         documentUrl: updatedUser.documentUrl, 
         kycStatus: updatedUser.kycStatus,
-        bvn: updatedUser.bvn ? `********${String(updatedUser.bvn).slice(-4)}` : null,
         nin: updatedUser.nin ? `********${String(updatedUser.nin).slice(-4)}` : null
     }
 

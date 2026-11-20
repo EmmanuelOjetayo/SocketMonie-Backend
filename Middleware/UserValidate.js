@@ -4,9 +4,8 @@ const AppError = require("../Utilis/AppError");
 const formatValidationError = require("../Utilis/formatValidationError");
 const kycSchema = joi.object({
   documentType: joi.string().valid('nin', 'voters_card', 'passport', 'drivers_license').required(),
-  bvn: joi.string().pattern(/^\d{11}$/).optional(), // Owner decision: BVN optional
-  nin: joi.string().pattern(/^\d{11}$/).required(), // Owner decision: NIN mandatory
-});
+  nin: joi.string().pattern(/^\d{11}$/).required(), // NIN is the sole national identity number collected
+}).options({ stripUnknown: true });
 
 const KYCUploadValidate = (req, res, next) => {
         if (!req.file) throw new AppError('Please upload a document file', 400);

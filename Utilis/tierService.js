@@ -19,7 +19,7 @@ const TIER_CONFIG = {
         min: 51000,
         max: 100000,
         interestRate: 6,
-        requiredKYC: ['passport', 'nin', 'bvn'],
+        requiredKYC: ['passport', 'nin'],
         label: 'Gold',
         benefits: ['Premium savings', '6% loan interest', 'Up to 150% borrowing limit', 'Priority support'],
     },
@@ -27,7 +27,7 @@ const TIER_CONFIG = {
         min: 100000,
         max: Infinity,
         interestRate: 5,
-        requiredKYC: ['passport', 'nin', 'bvn', 'drivers_license_or_voters_card'],
+        requiredKYC: ['passport', 'nin', 'drivers_license_or_voters_card'],
         label: 'Platinum',
         benefits: ['Elite savings', '5% loan interest', 'Up to 200% borrowing limit', 'VIP support', 'Financial advisory'],
     },
@@ -45,12 +45,10 @@ function meetsKYCForTier(user, tier) {
     const missing = [];
     const hasPassport = !!(user.avatarUrl || user.selfieUrl);
     const hasNIN = !!user.nin;
-    const hasBVN = !!user.bvn;
     const hasDriversLicenseOrVoter = (user.documentType === 'drivers_license' || user.documentType === 'voters_card') && !!user.documentUrl;
     const checks = {
         passport: hasPassport,
         nin: hasNIN,
-        bvn: hasBVN,
         'drivers_license_or_voters_card': hasDriversLicenseOrVoter,
     };
     required.forEach(req => { if (!checks[req]) missing.push(req); });

@@ -6,7 +6,6 @@ const fieldLabels = {
   password: "Password",
   newPassword: "New password",
   documentType: "Document type",
-  bvn: "BVN",
   nin: "NIN",
   otp: "Verification code",
   newPin: "New PIN",

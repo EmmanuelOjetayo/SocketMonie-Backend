@@ -11,7 +11,7 @@ const TierSchema = new mongoose.Schema(
     maxMonthlySavings: { type: Number, default: null }, // null = no upper bound (Platinum)
     interestRate: { type: Number, required: true }, // percentage, e.g. 10 for 10%
     requiredDocuments: {
-      type: [String], // e.g. ["passport", "nin", "bvn", "drivers_license_or_voters_card"]
+      type: [String], // e.g. ["passport", "nin", "drivers_license_or_voters_card"]
       default: [],
     },
   },
@@ -45,14 +45,14 @@ const PolicyConfigSchema = new mongoose.Schema(
           minMonthlySavings: 51000,
           maxMonthlySavings: 100000,
           interestRate: 6,
-          requiredDocuments: ["passport", "nin", "bvn"],
+          requiredDocuments: ["passport", "nin"],
         },
         {
           name: "Platinum",
           minMonthlySavings: 100000,
           maxMonthlySavings: null,
           interestRate: 5,
-          requiredDocuments: ["passport", "nin", "bvn", "drivers_license_or_voters_card"],
+          requiredDocuments: ["passport", "nin", "drivers_license_or_voters_card"],
         },
       ],
     },

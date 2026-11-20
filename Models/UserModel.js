@@ -119,7 +119,6 @@ thisMonthMinutesUnpaid: {
         verified: { type: Boolean, default: false },
         verifiedAt: { type: Date, default: null },
     },
-    bvn: { type: String, default: null },
     nin: { type: String, default: null },
     selfieUrl: { type: String, default: null },
     // Canonical profile-picture URL (Cloudinary secure_url) for TopHeader/Profile.
