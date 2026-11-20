@@ -1,7 +1,31 @@
 const Loan = require("../Models/LoanModel");
 const User = require("../Models/UserModel");
 const RecoveryObligation = require("../Models/RecoveryObligationModel");
+const { ScoreRepository } = require("../Repositories/ScoreRepository");
 const { createNotification } = require("./notificationHelper");
+
+// Confirmed SocketScore rule: a failed guarantor collection attempt is -10.
+const GUARANTOR_FAILURE_SCORE_DELTA = -10;
+
+const applyFailedGuarantorCollectionScore = async (guarantorUserId, reference) => {
+  if (!guarantorUserId) return null;
+  const user = await User.findById(guarantorUserId);
+  if (!user) return null;
+  const previous = Number(user.socketScore || 0);
+  const next = Math.max(0, Math.min(100, previous + GUARANTOR_FAILURE_SCORE_DELTA));
+  await ScoreRepository.updateUserScore(guarantorUserId, next, user.socketScoreBreakdown || {});
+  await ScoreRepository.pushUserScoreHistory(guarantorUserId, {
+    total: next,
+    breakdown: {
+      event: "failed_guarantor_collection",
+      delta: GUARANTOR_FAILURE_SCORE_DELTA,
+      previous,
+      reference,
+    },
+    recordedAt: new Date(),
+  });
+  return next;
+};
 
 const getOldestOverdueDays = (installments = []) => {
   const now = new Date();
@@ -94,16 +118,18 @@ const syncRecoveryObligations = async (loan) => {
   }
 
   const shareCount = 4; // four guarantors collectively guarantee 100% (25% each)
-  const baseShare = Math.floor((totalRecoveryObligation / shareCount) * 100) / 100;
-  let allocated = 0;
+  // Fixed 25% share per active guarantor. The last guarantor never absorbs
+  // another guarantor's unpaid share.
+  const share = Math.floor((totalRecoveryObligation / shareCount) * 100) / 100;
+  // Hard cap: 25% of the ORIGINAL approved principal, regardless of legacy
+  // guaranteedAmount values or the outstanding balance.
+  const principalCap =
+    Math.round(Number(loan.principalAmount || loan.totalRepayable || 0) * 0.25 * 100) / 100;
 
   for (let i = 0; i < activeGuarantors.length; i++) {
     const g = activeGuarantors[i];
-    let share = i === activeGuarantors.length - 1 ? Math.round((totalRecoveryObligation - allocated) * 100) / 100 : baseShare;
-    allocated = Math.round((allocated + share) * 100) / 100;
-
-    const guaranteedCap = Number(g.guaranteedAmount || loan.totalRepayable || 0);
-    const alreadyRecovered = 0; // per-obligation record tracks actual recovered amount; cap enforcement uses tracked amounts below
+    const recordedCap = Number(g.guaranteedAmount || 0);
+    const guaranteedCap = Math.min(principalCap, recordedCap || principalCap);
     let obligation = await RecoveryObligation.findOne({ loanId: loan._id, guarantorUserId: g.userId });
 
     if (!obligation) {
@@ -197,40 +223,84 @@ const recordGuarantorCollectionAttempt = async (obligationId, amount, mandates =
   const obligation = await RecoveryObligation.findById(obligationId);
   if (!obligation) throw new AppError("Recovery obligation not found.", 404);
 
+  const attemptFailed = String(mandates.status || "").toLowerCase() === "failed";
+  const scorePenaltyApplied = attemptFailed;
+
   // Check deduction execution status
   if (obligation.deductionExecutionStatus === "not_enabled") {
-    // Infrastructure not yet enabled for actual deductions
-    // Record the attempt as infrastructure-level tracking only
-    obligation.deductions.push({
+    // Infrastructure not yet enabled for actual deductions. This is a tracking
+    // record, NOT a failed collection, unless the caller explicitly reports one.
+    const deduction = {
       amount,
-      status: "pending",
+      status: attemptFailed ? "failed" : "pending",
       attemptedAt: new Date(),
       reference: `INFRA_${obligation._id}_${Date.now()}`,
-      failureReason: "Collection mechanism not yet activated - mandate/consent provider integration required",
-    });
+      failureReason: attemptFailed
+        ? mandates.failureReason || "Guarantor collection failed"
+        : "Collection mechanism not yet activated - mandate/consent provider integration required",
+      scorePenaltyApplied,
+    };
+    obligation.deductions.push(deduction);
+    const savedDeduction = obligation.deductions[obligation.deductions.length - 1];
     obligation.lastDeductionAt = new Date();
     await obligation.save();
+    if (attemptFailed) {
+      try {
+        savedDeduction.scoreResult = await applyFailedGuarantorCollectionScore(
+          obligation.guarantorUserId,
+          savedDeduction.reference
+        );
+        await obligation.save();
+      } catch (scoreErr) {
+        console.error(
+          `[SCORE] failed guarantor collection penalty failed for ${obligation.guarantorUserId}:`,
+          scoreErr?.message || scoreErr
+        );
+      }
+    }
     return {
-      status: "tracked_infrastructure_only",
-      message: "Collection attempt tracked at infrastructure level. Mandate/consent provider integration required for actual execution.",
+      status: attemptFailed ? "failed" : "tracked_infrastructure_only",
+      message: attemptFailed
+        ? "Failed collection attempt recorded; guarantor SocketScore reduced by 10."
+        : "Collection attempt tracked at infrastructure level. Mandate/consent provider integration required for actual execution.",
     };
   }
 
   // If execution is enabled, attempt the collection (placeholder for provider integration)
-  // This would integrate with a supported collection provider
-  obligation.deductions.push({
+  // This would integrate with a supported collection provider.
+  const deduction = {
     amount,
     status: "pending",
     attemptedAt: new Date(),
     reference: `COLL_${obligation._id}_${Date.now()}`,
     ...mandates,
-  });
+    scorePenaltyApplied,
+  };
+  obligation.deductions.push(deduction);
+  const savedDeduction = obligation.deductions[obligation.deductions.length - 1];
   obligation.lastDeductionAt = new Date();
   await obligation.save();
 
+  if (attemptFailed) {
+    try {
+      savedDeduction.scoreResult = await applyFailedGuarantorCollectionScore(
+        obligation.guarantorUserId,
+        savedDeduction.reference
+      );
+      await obligation.save();
+    } catch (scoreErr) {
+      console.error(
+        `[SCORE] failed guarantor collection penalty failed for ${obligation.guarantorUserId}:`,
+        scoreErr?.message || scoreErr
+      );
+    }
+  }
+
   return {
-    status: "attempt_recorded",
-    message: "Collection attempt recorded. Actual execution depends on provider integration and mandate consent.",
+    status: attemptFailed ? "failed" : "attempt_recorded",
+    message: attemptFailed
+      ? "Failed collection attempt recorded; guarantor SocketScore reduced by 10."
+      : "Collection attempt recorded. Actual execution depends on provider integration and mandate consent.",
   };
 };
 

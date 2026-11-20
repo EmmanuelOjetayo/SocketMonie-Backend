@@ -23,11 +23,15 @@ const {
   isSuccessfulStatus,
 } = require("../Utilis/paymentStatus");
 
+const Savings = require("../Models/SavingsModel");
 const LoanTransaction = require("../Models/LoanTransactionModel");
 const MinuteTransaction = require("../Models/MinuteTransactionModel");
 const MembershipTransaction = require("../Models/MembershipTransactionModel");
 const SavingsTransaction = require("../Models/SavingsTransactionModel");
+const User = require("../Models/UserModel");
 const { sendPaymentReceiptSafe } = require("./ReceiptService");
+
+const TERMINAL_FAILURE_STATUSES = ["failed", "cancelled", "canceled", "error", "declined", "abandoned", "reversed", "terminated"];
 
 const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
@@ -287,8 +291,15 @@ const handleDepositWebhook = async (data) => {
     return;
   }
   if (!isSuccessfulStatus(status)) {
-    // Only successful charges complete deposits; failures handled via verify path UX.
-    console.log(`[DEPOSIT WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
+    if (TERMINAL_FAILURE_STATUSES.includes(status)) {
+      await Savings.updateOne(
+        { reference, status: "pending", type: "deposit", category: { $ne: "minutes_payment" } },
+        { $set: { status: "failed" } }
+      ).catch((err) =>
+        console.error(`[DEPOSIT WEBHOOK] failed to persist terminal failure: ${err?.message || err}`)
+      );
+    }
+    console.log(`[DEPOSIT WEBHOOK] ✗ non-successful status "${status}" — no settlement`);
     return;
   }
   // Flutterwave best practice: re-verify with the API before fulfilling.
@@ -312,7 +323,22 @@ const handleDepositWebhook = async (data) => {
     console.log(`[DEPOSIT WEBHOOK] ✗ currency mismatch: ${v.currency} — no settlement`);
     return;
   }
-  console.log(`[DEPOSIT WEBHOOK] ② FLW re-verify OK | ref match | NGN`);
+
+  // Amount is checked against the server-created deposit intent. Never credit
+  // from a webhook payload amount alone.
+  const pendingRecord = await PaymentRepository.findSavingsByReference(reference);
+  if (!pendingRecord) {
+    console.log(`[DEPOSIT WEBHOOK] ✗ no savings deposit intent found for ref ${reference}`);
+    return;
+  }
+  const verifiedGross = Number(v.charged_amount ?? v.amount ?? 0);
+  if (!verifiedGross || verifiedGross < Number(pendingRecord.amount || 0)) {
+    console.log(
+      `[DEPOSIT WEBHOOK] ✗ amount mismatch | expected: ${pendingRecord.amount} | received: ${verifiedGross} — no settlement`
+    );
+    return;
+  }
+  console.log(`[DEPOSIT WEBHOOK] ② FLW re-verify OK | ref match | NGN | amount verified`);
 
   if (await PaymentRepository.isTransactionProcessed(transactionId, "savings")) {
     console.log(`[DEPOSIT WEBHOOK] ✗ transaction ${transactionId} already processed — idempotent skip`);
@@ -616,6 +642,7 @@ const handleRepaymentWebhook = async (data) => {
   }
 
   // Re-verify before crediting a loan (FLW best practice).
+  let verifiedPayment = null;
   try {
     const verified = await verifyTransactionById(transactionId);
     const v = verified.data || {};
@@ -627,13 +654,18 @@ const handleRepaymentWebhook = async (data) => {
       console.log(`[REPAYMENT WEBHOOK] ✗ tx_ref mismatch | expected: ${reference} | got: ${v.tx_ref} — no settlement`);
       return;
     }
-    console.log("[REPAYMENT WEBHOOK] ② FLW re-verify OK | ref match");
+    if (String(v.currency || "NGN").toUpperCase() !== "NGN") {
+      console.log(`[REPAYMENT WEBHOOK] ✗ currency mismatch: ${v.currency} — no settlement`);
+      return;
+    }
+    verifiedPayment = v;
+    console.log("[REPAYMENT WEBHOOK] ② FLW re-verify OK | ref match | NGN");
   } catch (e) {
     console.log(`[REPAYMENT WEBHOOK] ✗ FLW re-verify threw: ${e?.message || e} — no settlement`);
     return;
   }
 
-  if (await PaymentRepository.isTransactionProcessed(transactionId, "savings")) {
+  if (await PaymentRepository.isTransactionProcessed(transactionId, "loan")) {
     console.log(`[REPAYMENT WEBHOOK] ✗ transaction ${transactionId} already processed — idempotent skip`);
     return;
   }
@@ -641,6 +673,15 @@ const handleRepaymentWebhook = async (data) => {
   const repayment = await PaymentRepository.findRepaymentByReference(reference);
   if (!repayment) {
     console.log(`[REPAYMENT WEBHOOK] ✗ no matching repayment record for ref ${reference}`);
+    return;
+  }
+
+  // Amount is validated against the server-created intent, never the browser.
+  const paidAmount = Number(verifiedPayment?.charged_amount ?? verifiedPayment?.amount ?? 0);
+  if (!paidAmount || paidAmount < Number(repayment.amount || 0)) {
+    console.log(
+      `[REPAYMENT WEBHOOK] ✗ amount mismatch | expected: ${repayment.amount} | received: ${paidAmount} — no settlement`
+    );
     return;
   }
 
@@ -652,44 +693,44 @@ const handleRepaymentWebhook = async (data) => {
   }
 
   console.log(
-    `[REPAYMENT WEBHOOK] ③ updating loan ${repayment.loanId} | userId: ${repayment.userId} | amount: ${settledAmount || repayment.amount}`
+    `[REPAYMENT WEBHOOK] ③ updating loan ${repayment.loanId} | userId: ${repayment.userId} | amount: ${paidAmount}`
   );
   await processLoanRepayment({
     loanId: repayment.loanId,
     transactionId: String(transactionId),
-    paymentAmount: settledAmount || repayment.amount,
+    paymentAmount: paidAmount,
     paymentReference: reference,
     paymentMethod: "flutterwave",
-    verifiedData: data,
+    verifiedData: verifiedPayment,
   });
 
   await createNotification({
     userId: repayment.userId,
     type: "loan",
     title: "Loan Repayment Successful",
-    message: `Your loan repayment of ₦${(settledAmount || repayment.amount).toLocaleString()} was successful.`,
+    message: `Your loan repayment of ₦${paidAmount.toLocaleString()} was successful.`,
   });
   await logAudit({
     userId: repayment.userId,
     action: "loan_repay",
     targetType: "loan",
     targetId: repayment.loanId,
-    details: { amount: settledAmount || repayment.amount, reference },
+    details: { amount: paidAmount, reference },
   });
 
-  // Dual-write: dedicated loan transaction record (idempotent by reference).
+  // Dedicated loan transaction record (idempotent by reference).
   await recordLoanTransaction({
     userId: repayment.userId,
     loanId: repayment.loanId,
     type: "loan_repayment",
     reference,
     transactionId: String(transactionId),
-    amount: settledAmount || repayment.amount,
+    amount: paidAmount,
     currency: "NGN",
     status: "completed",
     method: "flutterwave",
     paidAt: new Date(),
-    metadata: { source: "repaymentWebhook" },
+    metadata: { source: "repaymentWebhook", providerTransactionId: String(transactionId) },
   });
 
   // Receipt: exactly-once email for the settled repayment (idempotent claim).
@@ -699,13 +740,13 @@ const handleRepaymentWebhook = async (data) => {
     type: "loan_repayment",
     reference,
     transactionId: String(transactionId),
-    amount: settledAmount || repayment.amount,
+    amount: paidAmount,
     currency: "NGN",
     paidAt: new Date(),
   });
 
   console.log(
-    `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${settledAmount || repayment.amount} | user notified + audit logged`
+    `[REPAYMENT WEBHOOK] ✔ finished OK | ref: ${reference} | TX: ${transactionId} | amount: ${paidAmount} | user notified + audit logged`
   );
 };
 
@@ -720,7 +761,15 @@ const handleMembershipFeeWebhook = async (data) => {
   );
 
   if (!isSuccessfulStatus(status)) {
-    console.log(`[MEMBERSHIP WEBHOOK] ✗ non-successful status "${status}" — ignoring event`);
+    if (TERMINAL_FAILURE_STATUSES.includes(status)) {
+      await MembershipTransaction.updateOne(
+        { reference, status: "pending" },
+        { $set: { status: "failed", "metadata.failureStatus": status } }
+      ).catch((err) =>
+        console.error(`[MEMBERSHIP WEBHOOK] failed to persist terminal failure: ${err?.message || err}`)
+      );
+    }
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ non-successful status "${status}" — no settlement`);
     return;
   }
   if (!reference || !transactionId) {
@@ -736,6 +785,10 @@ const handleMembershipFeeWebhook = async (data) => {
     }
     if (String(v.tx_ref || "") !== String(reference)) {
       console.log(`[MEMBERSHIP WEBHOOK] ✗ tx_ref mismatch | expected: ${reference} | got: ${v.tx_ref} — no settlement`);
+      return;
+    }
+    if (String(v.currency || "NGN").toUpperCase() !== "NGN") {
+      console.log(`[MEMBERSHIP WEBHOOK] ✗ currency mismatch: ${v.currency} — no settlement`);
       return;
     }
     if (Number(v.charged_amount ?? v.amount ?? 0) < MEMBERSHIP_FEE_AMOUNT) {
@@ -764,36 +817,50 @@ const handleMembershipFeeWebhook = async (data) => {
     return;
   }
 
+  // Atomic claim: two concurrent webhook deliveries may both read
+  // membershipFeePaid=false, but only one can flip it to true. Keep the
+  // original MEM_ reference so status polling never loses the checkout record.
   console.log(`[MEMBERSHIP WEBHOOK] ③ updating user ${user._id} | marking membershipFeePaid: true`);
-  user.membershipFeePaid = true;
-  user.membershipFeePaidAt = new Date();
-  user.membershipFeeTxRef = String(transactionId);
-  await user.save();
-  console.log(`[MEMBERSHIP WEBHOOK] ④ DB updated | user ${user._id} membership activated`);
+  const updatedUser = await User.findOneAndUpdate(
+    { _id: user._id, membershipFeePaid: { $ne: true } },
+    {
+      $set: {
+        membershipFeePaid: true,
+        membershipFeePaidAt: new Date(),
+        membershipFeeTxRef: reference,
+      },
+    },
+    { new: true }
+  );
+  if (!updatedUser) {
+    console.log(`[MEMBERSHIP WEBHOOK] ✗ membership already activated by a concurrent event — idempotent skip`);
+    return;
+  }
+  console.log(`[MEMBERSHIP WEBHOOK] ④ DB updated | user ${updatedUser._id} membership activated`);
 
-  // Dual-write: dedicated membership transaction record (idempotent by reference).
+  // Dedicated membership transaction record (idempotent by reference).
   await recordMembershipTransaction({
-    userId: user._id,
-    reference: String(user.membershipFeeTxRef || reference),
+    userId: updatedUser._id,
+    reference,
     transactionId: String(transactionId),
     amount: MEMBERSHIP_FEE_AMOUNT,
     currency: "NGN",
     status: "completed",
     method: "flutterwave",
-    paidAt: user.membershipFeePaidAt || new Date(),
-    metadata: { source: "membershipWebhook" },
+    paidAt: updatedUser.membershipFeePaidAt || new Date(),
+    metadata: { source: "membershipWebhook", providerTransactionId: String(transactionId) },
   });
 
   // Receipt: exactly-once email for the settled fee (idempotent claim).
   await sendPaymentReceiptSafe({
-    userId: user._id,
+    userId: updatedUser._id,
     Model: MembershipTransaction,
     type: "membership_fee",
-    reference: String(user.membershipFeeTxRef || reference),
+    reference,
     transactionId: String(transactionId),
     amount: MEMBERSHIP_FEE_AMOUNT,
     currency: "NGN",
-    paidAt: user.membershipFeePaidAt || new Date(),
+    paidAt: updatedUser.membershipFeePaidAt || new Date(),
   });
 
   await createNotification({
@@ -851,19 +918,30 @@ const handleMinuteWebhook = async (data) => {
     return;
   }
 
-  // The checkout reference lives on a pending Savings record
-  // created by initializeMinutes. Find it first.
-  const pendingPayment = await PaymentRepository.findSavingsByReference(reference);
+  // The checkout reference lives on a pending MinuteTransaction record created
+  // by initializeMinutes. It is never a Savings record. There is deliberately
+  // NO fallback to client metadata/customer identity: only the server-created
+  // intent may choose the member, category and amount.
+  const pendingPayment = await PaymentRepository.findMinutesCheckoutByReference(reference);
   console.log(
-    `[MINUTES WEBHOOK] ② checkout record ${pendingPayment ? `found (status: ${pendingPayment.status})` : "NOT found — falling back"}`
+    `[MINUTES WEBHOOK] ② checkout record ${pendingPayment ? `found (status: ${pendingPayment.status})` : "NOT found"}`
   );
-  if (!pendingPayment && !isSuccessfulStatus(status)) return;
+  if (!pendingPayment) {
+    console.error(
+      `[MINUTES WEBHOOK] ✗ no server-created MinuteTransaction for ref ${reference} — refusing to settle`
+    );
+    return;
+  }
 
   if (!isSuccessfulStatus(status)) {
-    if (pendingPayment.status === "completed") return;
-    console.log(`[MINUTES WEBHOOK] ③ marking checkout record FAILED (webhook status: ${status})`);
-    pendingPayment.status = "failed";
-    await pendingPayment.save();
+    if (pendingPayment.status !== "pending") return;
+    const failed = await MinuteTransaction.findOneAndUpdate(
+      { _id: pendingPayment._id, status: "pending" },
+      { $set: { status: "failed", "metadata.failureStatus": status } },
+      { new: true }
+    );
+    if (!failed) return;
+    console.log(`[MINUTES WEBHOOK] ③ checkout record FAILED (webhook status: ${status})`);
     await createNotification({
       userId: pendingPayment.userId,
       type: "savings",
@@ -891,6 +969,10 @@ const handleMinuteWebhook = async (data) => {
       );
       return;
     }
+    if (String(v.currency || "NGN").toUpperCase() !== "NGN") {
+      console.log(`[MINUTES WEBHOOK] ✗ currency mismatch: ${v.currency} — no settlement`);
+      return;
+    }
     console.log(`[MINUTES WEBHOOK] ④ FLW re-verify OK | ref match | settled amount: ${v.amount_settled ?? v.amount}`);
     verifiedData = v;
   } catch (e) {
@@ -898,114 +980,42 @@ const handleMinuteWebhook = async (data) => {
     return;
   }
 
-  // ---------------------------------------------------------------
-  // Checkout-record resolution (Defect 3 fallback chain, applied to
-  // VERIFIED data exactly like the CAMP reference implementation):
-  //   ① pending Savings record by our server-generated reference
-  //   ② verified meta.userId (sent by us at checkout time)
-  //   ③ verified customer.email (normalised) lookup
-  //   ④ verified customer.phone_number, compared on last 10 digits
-  // so "+234805…", "234805…" and "0805…" all compare equal.
-  // A reference lookup failure must never alias a member to payment —
-  // if every fallback misses, the event is logged for manual review.
-  // ---------------------------------------------------------------
-  let userIdFallback = null;
-  let resolutionVia = "reference-record";
-
-  if (!pendingPayment) {
-    const User = require("../Models/UserModel");
-
-    resolutionVia = "none";
-
-    // ② verified meta.userId / metadata.userId
-    const metaUser =
-      verifiedData?.meta?.userId ||
-      verifiedData?.metadata?.userId ||
-      null;
-    if (metaUser && String(metaUser).match(/^[a-fA-F0-9]{24}$/)) {
-      const exists = await User.exists({ _id: metaUser });
-      if (exists) {
-        userIdFallback = metaUser.toString();
-        resolutionVia = "verified-meta.userId";
-      }
-    }
-
-    // ③ verified customer.email
-    if (!userIdFallback && verifiedData?.customer?.email) {
-      const email = String(verifiedData.customer.email).trim().toLowerCase();
-      if (email) {
-        const byEmail = await User.findOne({ email }).select("_id").lean();
-        if (byEmail) {
-          userIdFallback = byEmail._id.toString();
-          resolutionVia = "customer.email";
-        }
-      }
-    }
-
-    // ④ verified customer.phone_number, last-10 comparison
-    if (!userIdFallback && verifiedData?.customer?.phone_number) {
-      const last10 = (p) =>
-        String(p || "")
-          .replace(/\D/g, "")
-          .replace(/^234/, "")
-          .replace(/^0+/, "")
-          .slice(-10);
-      const flw10 = last10(verifiedData.customer.phone_number);
-      if (flw10.length === 10) {
-        const candidates = await User.find({
-          phone: { $exists: true, $ne: null },
-        })
-          .select("_id phone")
-          .lean();
-        const hit = candidates.find((c) => last10(c.phone) === flw10);
-        if (hit) {
-          userIdFallback = hit._id.toString();
-          resolutionVia = "customer.phone(last10)";
-        }
-      }
-    }
-  }
-
-  if (!pendingPayment && !userIdFallback) {
-    console.error(
-      `[MINUTES WEBHOOK] Unresolvable checkout record after all fallbacks | ref: ${reference} | TX: ${transactionId} | email: ${verifiedData?.customer?.email || "—"} | phone: ${verifiedData?.customer?.phone_number || "—"}`
-    );
-    return;
-  }
-
-  if (!pendingPayment && userIdFallback) {
-    console.log(
-      `[MINUTES WEBHOOK] Checkout record missing for ref ${reference} — member resolved via ${resolutionVia}: ${userIdFallback}`
-    );
-  }
-
-  console.log(
-    `[MINUTES WEBHOOK] ⑤ member resolved via ${pendingPayment ? "reference-record" : resolutionVia} | userId: ${(pendingPayment?.userId || userIdFallback).toString()}`
-  );
-
-  if (pendingPayment && pendingPayment.status !== "completed" && pendingPayment.status !== "pending") {
-    // Already terminal for another reason — leave it alone.
-    return;
-  }
-
-  if (pendingPayment && pendingPayment.status === "completed") return;
+  if (pendingPayment.status !== "pending") return;
 
   // Settle exactly what this checkout paid for — never every outstanding
   // obligation. The checkout priced the earliest arrears into ONE reference
-  // (stored total on the pending Savings record). We settle only the oldest
-  // obligations whose grossed-up total fits that budget; obligations created
-  // after checkout remain pending for their own payment (P0 over-settlement fix).
-  // Fallback resolution (record missing) budgets from what Flutterwave
-  // actually charged, so the member is never over-credited.
-  const userId = (pendingPayment?.userId || userIdFallback).toString();
+  // (stored on the pending MinuteTransaction). Money, member and category all
+  // come from that server-created intent; the provider payload only confirms
+  // that the charge succeeded.
+  const userId = String(pendingPayment.userId);
+  const budget = Number(pendingPayment.amount || 0);
+  const paid = Number(verifiedData.charged_amount ?? verifiedData.amount ?? 0);
   const Minutes = require("../Models/MinutesModel");
   const { calculateFlutterwaveFee } = require("../Utilis/flutterwaveFee");
 
   const session = await startSafeSession();
   let settledCount = 0;
   let settledCurrentMonth = false;
+  let failureReason = null;
   try {
     await session.withTransaction(async () => {
+      // Atomic claim: concurrent/replayed webhooks can only settle this
+      // checkout once. The intent is marked terminal INSIDE the same DB
+      // transaction as the monthly-obligation updates, so it can never be
+      // "completed" with zero months settled.
+      const claimed = await MinuteTransaction.findOneAndUpdate(
+        { _id: pendingPayment._id, status: "pending" },
+        {
+          $set: {
+            status: "completed",
+            transactionId: String(transactionId),
+            "metadata.providerTransactionId": String(transactionId),
+          },
+        },
+        { new: true, session }
+      );
+      if (!claimed) return;
+
       const currentOutstanding = await Minutes.find({
         userId,
         status: { $in: ["pending", "overdue", "failed"] },
@@ -1013,18 +1023,36 @@ const handleMinuteWebhook = async (data) => {
       })
         .sort({ year: 1, month: 1 })
         .session(session);
-      if (!currentOutstanding.length) return;
 
-      const budget = pendingPayment
-        ? Number(pendingPayment.amount || 0)
-        : Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount);
-      const paid = Number(verifiedData.charged_amount ?? verifiedData.amount ?? amount);
+      const failClaim = async (reason) => {
+        // Roll the premature "completed" claim back to failed in this same
+        // transaction. The webhook still produces an honest terminal state.
+        failureReason = reason;
+        await MinuteTransaction.updateOne(
+          { _id: pendingPayment._id, status: "completed" },
+          {
+            $set: {
+              status: "failed",
+              "metadata.failureReason": reason,
+              "metadata.providerTransactionId": String(transactionId),
+            },
+          },
+          { session }
+        );
+      };
 
-      // Underpayment: settle nothing. The record stays pending for the
-      // reconciliation cron or a manual review — never a partial free settlement.
-      // Compare against the GROSS charged amount so fee-inclusive budgets
-      // (totalPayable) and charged amounts are on the same scale.
-      if (!budget || paid + 0.01 < budget) return;
+      if (!currentOutstanding.length) {
+        await failClaim("no_outstanding_minutes");
+        return;
+      }
+
+      // Underpayment: settle nothing. Compare gross charged amount with the
+      // gross budget stored on the intent so fee-inclusive values are on the
+      // same scale.
+      if (!budget || paid + 0.01 < budget) {
+        await failClaim("underpayment");
+        return;
+      }
 
       // Largest prefix of outstanding obligations (oldest first) whose
       // grossed-up price still fits the checkout budget.
@@ -1036,7 +1064,10 @@ const handleMinuteWebhook = async (data) => {
         if (totalPayable > budget) break;
         settleCount += 1;
       }
-      if (settleCount === 0) return;
+      if (settleCount === 0) {
+        await failClaim("budget_did_not_fit_any_obligation");
+        return;
+      }
 
       const toSettle = currentOutstanding.slice(0, settleCount);
       console.log(
@@ -1058,30 +1089,35 @@ const handleMinuteWebhook = async (data) => {
         { session }
       );
       settledCount = result.modifiedCount || 0;
-      console.log(
-        `[MINUTES WEBHOOK] ⑦ DB updated | months settled: ${settledCount} | current month included: ${settledCurrentMonth}`
-      );
-
+      if (settledCount === 0) {
+        // Another writer settled these obligations between read and update.
+        // Do not leave the checkout marked completed with nothing applied.
+        await failClaim("obligations_already_settled");
+        return;
+      }
       const now = new Date();
       settledCurrentMonth = toSettle.some(
         (item) =>
           item.month === now.getMonth() + 1 && item.year === now.getFullYear()
       );
-
-      if (pendingPayment) {
-        pendingPayment.status = "completed";
-        pendingPayment.transactionId = String(transactionId);
-        await pendingPayment.save({ session });
-      }
+      console.log(
+        `[MINUTES WEBHOOK] ⑦ DB updated | months settled: ${settledCount} | current month included: ${settledCurrentMonth}`
+      );
     });
   } finally {
     await session.endSession();
   }
 
-  if (settledCount === 0) {
+  if (failureReason || settledCount === 0) {
     console.log(
-      "[MINUTES WEBHOOK] ✗ finished with 0 months settled (no outstanding obligations, underpayment, or budget did not fit any prefix)"
+      `[MINUTES WEBHOOK] ✗ no month settled | reason: ${failureReason || "unknown"} | checkout marked failed`
     );
+    await createNotification({
+      userId,
+      type: "savings",
+      title: "Monthly Contribution Failed",
+      message: "Your SocketMinutes contribution could not be applied. Please review and try again.",
+    });
     return;
   }
 
@@ -1104,13 +1140,12 @@ const handleMinuteWebhook = async (data) => {
     targetType: "minutes",
     targetId: pendingPayment?._id || undefined,
     details: {
-      amount,
+      amount: budget,
       reference,
       transactionId,
       monthsSettled: settledCount,
       method: "flutterwave",
-      resolvedVia:
-        pendingPayment ? "reference-record" : "fallback-chain",
+      resolvedVia: "server-created-intent",
     },
   });
 
@@ -1123,7 +1158,7 @@ const handleMinuteWebhook = async (data) => {
     userId,
     reference,
     transactionId: String(transactionId),
-    amount: Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount),
+    amount: budget,
     currency: "NGN",
     status: "completed",
     method: "flutterwave",
@@ -1131,7 +1166,7 @@ const handleMinuteWebhook = async (data) => {
     metadata: {
       source: "minuteWebhook",
       monthsSettled: settledCount,
-      resolvedVia: pendingPayment ? "reference-record" : "fallback-chain",
+      resolvedVia: "server-created-intent",
     },
   });
 
@@ -1142,7 +1177,7 @@ const handleMinuteWebhook = async (data) => {
     type: "minute_contribution",
     reference,
     transactionId: String(transactionId),
-    amount: Number(verifiedData.amount_settled ?? verifiedData.amount ?? amount),
+    amount: budget,
     currency: "NGN",
     paidAt: new Date(),
     monthsSettled: settledCount,
@@ -1156,6 +1191,18 @@ const handleMinuteWebhook = async (data) => {
     console.error(`Minutes score update failed for user ${userId}:`, scoreErr?.message || scoreErr);
   }
 };
+
+// Pure normalizer exposed for regression tests: provider payloads are mapped
+// once, before any handler reads them. Browser/redirect data never enters this
+// path.
+const normalizeWebhookData = (payload = {}) => ({
+  ...payload,
+  status: String(payload.status || "").toLowerCase(),
+  charged_amount: Number(payload.charged_amount ?? payload.amount ?? 0),
+  amount: Number(payload.amount ?? 0),
+  amount_settled: Number(payload.amount_settled ?? payload.amount ?? 0),
+  currency: payload.currency || "NGN",
+});
 
 const processWebhook = async (rawBody, signature, event) => {
   const secretHash = process.env.FLW_SECRET_HASH || process.env.FLW_WEBHOOK_SECRET || "";
@@ -1199,17 +1246,13 @@ const processWebhook = async (rawBody, signature, event) => {
   if (!txRef) return { status: "ignored" };
   const reference = String(txRef);
 
-  const normalizedData = {
+  const normalizedData = normalizeWebhookData({
     ...payload,
     id: transactionId,
     tx_ref: reference,
     reference,
-    status: String(payload.status || (isChargeEvent ? "successful" : "") || "").toLowerCase(),
-    charged_amount: Number(payload.charged_amount ?? payload.amount ?? 0),
-    amount: Number(payload.amount ?? 0),
-    amount_settled: Number(payload.amount_settled ?? payload.amount ?? 0),
-    currency: payload.currency || "NGN",
-  };
+    status: payload.status || (isChargeEvent ? "successful" : ""),
+  });
 
   if (reference.startsWith("DEP_")) {
     await handleDepositWebhook(normalizedData);
@@ -1362,7 +1405,9 @@ const getPaymentStatus = async (userId, reference) => {
         : Number(doc.metadata?.monthsCount) || null,
   });
 
-  // (1) Settled dedicated transaction records (webhook OR callback evidence).
+  // Webhook-only confirmation: read the status established by the authoritative
+  // webhook. This endpoint NEVER verifies with Flutterwave and NEVER settles a
+  // payment — it is a read model for the result pages only.
   const [loanTx, minuteTx, membershipTx, savingsTx] = await Promise.all([
     LoanTransaction.findOne({ reference: ref, userId }).lean(),
     MinuteTransaction.findOne({ reference: ref, userId }).lean(),
@@ -1370,14 +1415,17 @@ const getPaymentStatus = async (userId, reference) => {
     SavingsTransaction.findOne({ reference: ref, userId }).lean(),
   ]);
 
-  const settled =
+  const dedicated =
     (loanTx && receiptFrom(loanTx, "loan_repayment")) ||
     (minuteTx && receiptFrom(minuteTx, "minute_contribution")) ||
     (membershipTx && receiptFrom(membershipTx, "membership_fee")) ||
     (savingsTx && receiptFrom(savingsTx));
-  if (settled && settled.status !== "pending") return settled;
+  // Any terminal state (successful OR failed) is authoritative. Pending stays
+  // pending until the webhook writes a terminal state.
+  if (dedicated && dedicated.status !== "pending") return dedicated;
 
-  // (2) Pending operational state, scoped to the requesting user.
+  // Legacy operational state, scoped to the requesting user. New flows use
+  // the dedicated transaction records above.
   const [savingsDoc, minutesDoc, memberDoc] = await Promise.all([
     PaymentRepository.findSavingsByReference(ref),
     PaymentRepository.findMinutesByReference(ref),
@@ -1388,13 +1436,14 @@ const getPaymentStatus = async (userId, reference) => {
   const ownsMinutes = own(minutesDoc);
   const ownsMembership = memberDoc && String(memberDoc._id) === String(userId);
 
-  if (!ownsSavings && !ownsMinutes && !ownsMembership && !settled) {
+  if (!ownsSavings && !ownsMinutes && !ownsMembership && !dedicated) {
     // Not found anywhere for this user — never fabricated, never leaked.
     throw new AppError("Transaction not found for this account.", 404);
   }
 
   const current =
-    ownsMinutes
+    (dedicated && dedicated.status === "pending" && dedicated) ||
+    (ownsMinutes
       ? receiptFrom(minutesDoc, "minute_contribution")
       : ownsSavings
         ? receiptFrom(savingsDoc)
@@ -1412,40 +1461,9 @@ const getPaymentStatus = async (userId, reference) => {
             destinationBank: null,
             monthsSettled: null,
           }
-        : settled;
+        : dedicated);
 
-  // (3) Still pending → one idempotent provider reconciliation pass. Settlement
-  // handlers are idempotent by reference, so replaying a webhook that already
-  // fired (or racing the concurrent callback verify) cannot double credit.
-  const reconcilable = isReconcilableReference(ref);
-  let reconciled = false;
-  if (current.status === "pending" && reconcilable) {
-    const outcome = await reconcilePaymentByReference(ref);
-    reconciled = outcome?.status === "reconciled";
-    if (reconciled) return getPaymentStatus(userId, ref); // re-read after settlement
-    // Definitive provider failure (verified against the payment provider via
-    // Flutterwave's API — NOT the browser callback) on a still-pending record:
-    // the customer did not successfully pay. Persist the failed state on the
-    // pending record (mirrors the webhook failure flow) and converge the status
-    // so the result page shows the failure instead of polling forever on
-    // stale "pending" state.
-    const providerStatus = String(outcome?.status || "").toLowerCase();
-    const FAILED_PROVIDER_STATUSES = ["failed", "cancelled", "reversed", "terminated"];
-    if (FAILED_PROVIDER_STATUSES.includes(providerStatus)) {
-      try {
-        const pendingRecord = await PaymentRepository.findSavingsByReference(ref);
-        if (pendingRecord && pendingRecord.status === "pending") {
-          pendingRecord.status = "failed";
-          await pendingRecord.save();
-        }
-      } catch (persistErr) {
-        console.error("[PAYMENT STATUS] failed to persist provider failure:", persistErr?.message || persistErr);
-      }
-      return { ...current, status: "failed", reconciled, lastCheckedAt: new Date().toISOString() };
-    }
-  }
-
-  return { ...current, reconciled, lastCheckedAt: new Date().toISOString() };
+  return { ...current, lastCheckedAt: new Date().toISOString() };
 };
 const PaymentService = {
   initiateDeposit,
@@ -1455,6 +1473,7 @@ const PaymentService = {
   reconcileDepositByReference,
   verifyBankAccount,
   getPaymentStatus,
+  normalizeWebhookData,
   toCanonicalStatus,
   typeFromReference,
   isReconcilableReference,
@@ -1462,19 +1481,12 @@ const PaymentService = {
 };
 
 /**
- * Authoritative transaction status for the frontend success pages.
+ * PaymentService settlement policy (webhook-only).
  *
- * The backend (not the browser redirect) is the source of truth:
- *   (1) Dedicated transaction records written at settlement (LoanTransaction,
- *       MinuteTransaction, MembershipTransaction, SavingsTransaction) — these
- *       exist ONLY after webhook or callback settlement, so their presence is
- *       itself proof of a confirmed operation.
- *   (2) Pending operational state (Savings, Minutes, User.membershipFeeTxRef).
- *   (3) While still pending, an idempotent provider reconciliation is attempted
- *       ONCE for known server-generated references, so a missed webhook AND a
- *       user polling this endpoint both converge on the same verified outcome.
- *       Duplicate credits are impossible: every settlement path is idempotent
- *       by reference.
+ * The signed Flutterwave webhook is the sole confirmation path. The status
+ * endpoint is a READ MODEL over the webhook-written records and never calls
+ * Flutterwave, reconciles, or mutates financial state. Pending stays pending
+ * until the webhook establishes a terminal state.
  *
  * Ownership is enforced: every lookup is scoped to the requesting user, and
  * cross-account references return 404 (never leak another member's payment).

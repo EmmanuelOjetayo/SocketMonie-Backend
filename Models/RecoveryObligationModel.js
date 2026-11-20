@@ -71,6 +71,8 @@ const RecoveryObligationSchema = new mongoose.Schema(
         providerReference: String,
         installmentNumber: Number,
         failureReason: String,
+        scorePenaltyApplied: { type: Boolean, default: false },
+        scoreResult: { type: Number, default: null },
       },
     ],
     paymentReferences: [{ type: String, unique: true, sparse: true }],

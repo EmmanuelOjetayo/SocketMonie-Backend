@@ -36,7 +36,8 @@ const AdminRepository = {
   },
 
   findSavingsForUser: (userId, session = null) => {
-    const query = Savings.find({ userId });
+    // Never let a SocketMinutes checkout record inflate available savings.
+    const query = Savings.find({ userId, category: { $ne: "minutes_payment" } });
     if (session) query.session(session);
     return query;
   },

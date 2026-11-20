@@ -28,6 +28,7 @@ dotenv.config({
 const AuthRoutes = require("../Routes/AuthRoutes");
 const UserRoutes = require("../Routes/UserRoutes");
 const SavingsRouter = require("../Routes/SavingsRoute");
+const MembershipRoutes = require("../Routes/MembershipRoutes");
 const reportsRoutes = require("../Routes/reportsRoutes");
 const loanRoutes = require("../Routes/LoanRoutes");
 const notificationRoutes = require("../Routes/NotificationRoutes");
@@ -218,6 +219,7 @@ app.use("/api/auth", AuthRoutes);
 app.use("/api/user", UserRoutes);
 
 app.use("/api/savings", SavingsRouter);
+app.use("/api/membership", MembershipRoutes);
 
 app.use("/api/reports", reportsRoutes);
 
@@ -335,13 +337,9 @@ const startServer = async () => {
   try {
     await db();
 
-    // FALLBACK 2: sweep stale pending payments so missed webhooks reconcile.
-    try {
-      const { startReconciliationCron } = require("../Utilis/paymentReconciliationCron");
-      startReconciliationCron();
-    } catch (cronErr) {
-      console.error("⚠️  Reconciliation cron failed to start:", cronErr.message);
-    }
+    // Webhook-only confirmation: the former stale-payment reconciliation cron
+    // is intentionally NOT started. A pending payment stays pending until the
+    // signed Flutterwave webhook establishes its final state.
 
     // SocketScore: finalize last month's CGPA-style scores on the 1st.
     try {

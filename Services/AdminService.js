@@ -48,8 +48,10 @@ const getMembers = async ({ page, limit, status, search }) => {
 const getMemberDetails = async (userId) => {
   const member = await AdminRepository.findMember(userId);
   if (!member) throw new AppError("Member not found", 404);
+  // SocketMinutes checkout records are not savings deposits. Exclude them by
+  // category so member/admin totals stay scoped to the Savings ledger.
   const [deposits, withdrawals, loans, scoreHistory] = await Promise.all([
-    AdminRepository.findSavings({ userId, type: "deposit", status: "completed" }),
+    AdminRepository.findSavings({ userId, type: "deposit", category: { $ne: "minutes_payment" }, status: "completed" }),
     AdminRepository.findSavings({ userId, type: "withdrawal", status: "completed" }),
     Loan.find({ userId }),
     AdminRepository.findScoreHistory(userId),
@@ -539,7 +541,11 @@ const getAdminReports = async ({ type = "overview" }) => {
 
   switch (type) {
     case "savings":
-      reports = await AdminRepository.findSavingsReport({ status: "completed", type: { $in: ["deposit", "withdrawal"] } });
+      reports = await AdminRepository.findSavingsReport({
+        status: "completed",
+        type: { $in: ["deposit", "withdrawal"] },
+        category: { $ne: "minutes_payment" },
+      });
       stats.totalAmount = reports.reduce((sum, item) => sum + (item.type === "withdrawal" ? -item.amount : item.amount), 0);
       break;
 

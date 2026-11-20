@@ -17,11 +17,14 @@ test("genOTP returns a cryptographically secure 4-digit numeric OTP", () => {
 });
 
 test("genOTP returns unique OTP values across generations", () => {
+  // The 4-digit OTP space has only 9,000 values, so a large sample makes a
+  // normal birthday collision flaky in CI. A small sample still catches a
+  // constant/broken generator without probabilistic failures.
   const seen = new Set();
-  for (let i = 0; i < 25; i++) {
+  for (let i = 0; i < 8; i++) {
     seen.add(genOTP());
   }
-  assert.equal(seen.size, 25);
+  assert.equal(seen.size, 8);
 });
 
 test("ChangePinValidate accepts a well-formed change payload", () => {

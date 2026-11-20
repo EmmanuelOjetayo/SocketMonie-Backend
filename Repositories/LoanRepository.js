@@ -1,8 +1,16 @@
 const Loan = require("../Models/LoanModel");
+const LoanTransaction = require("../Models/LoanTransactionModel");
 const Savings = require("../Models/SavingsModel");
 const User = require("../Models/UserModel");
 const Guarantor = require("../Models/GuarantorModel");
 const SystemSettings = require("../Models/SystemSettingsModel");
+
+// Legacy SocketMinutes checkout rows were also written to Savings. They are
+// never eligible savings/deposit evidence for loan calculations.
+const SAVINGS_LEDGER_SCOPE = {
+  type: { $in: ["deposit", "withdrawal"] },
+  category: { $ne: "minutes_payment" },
+};
 
 const LoanRepository = {
   findById: (loanId, session = null) => {
@@ -58,13 +66,15 @@ const LoanRepository = {
 
   count: (filter) => Loan.countDocuments(filter),
 
-  findCompletedSavings: (userId) => Savings.find({ userId, status: "completed" }),
+  findCompletedSavings: (userId) =>
+    Savings.find({ userId, status: "completed", ...SAVINGS_LEDGER_SCOPE }),
 
   findCompletedDeposits: (userId) =>
     Savings.find({
       userId,
-      type: "deposit",
       status: "completed",
+      ...SAVINGS_LEDGER_SCOPE,
+      type: "deposit",
     }).sort({ createdAt: 1 }),
 
   findSettings: () => SystemSettings.findOne(),
@@ -134,23 +144,25 @@ const LoanRepository = {
     return query;
   },
 
+  // Loan repayments use LoanTransaction, not Savings. These method names are
+  // retained for call-site stability but now target the dedicated model.
   findSavings: (filter, session = null) => {
-    const query = Savings.findOne(filter);
+    const query = LoanTransaction.findOne(filter);
     if (session) query.session(session);
     return query;
   },
 
   createSavingsRecord: (data, session = null) => {
     if (session) {
-      return Savings.create([data], { session }).then((docs) => docs[0]);
+      return LoanTransaction.create([data], { session }).then((docs) => docs[0]);
     }
-    return Savings.create(data);
+    return LoanTransaction.create(data);
   },
 
   updateSavings: (filter, update, session = null) => {
     const options = { new: true };
     if (session) options.session = session;
-    return Savings.updateOne(filter, update, options);
+    return LoanTransaction.updateOne(filter, update, options);
   },
 };
 

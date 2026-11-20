@@ -42,11 +42,7 @@ loanRoutes.post(
   loanController.initializeLoanRepayment
 );
 
-loanRoutes.post(
-  "/repay/verify",
-  LoanValidate.validateRepayVerify,
-  loanController.verifyLoanRepayment
-);
+// /repay/verify was removed: browser callbacks cannot confirm a payment.
 
 // Admin / Management Actions
 loanRoutes.put(

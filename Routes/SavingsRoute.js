@@ -9,7 +9,6 @@ const {
   requestWithdrawal,
   updateTierCommitment,
   initializeMembershipFee,
-  verifyMembershipFee,
 } = require("../Controllers/SavingsController");
 
 router.get("/summary", routeProtect, getSavingsSummary);
@@ -19,6 +18,6 @@ router.get("/history", routeProtect, getSavingsHistory);
 router.post("/withdraw-request", routeProtect, SavingsValidate.validateWithdrawRequest, requestWithdrawal);
 router.put("/tier-commitment", routeProtect, SavingsValidate.validateTierCommitment, updateTierCommitment);
 router.post("/membership-fee/initialize", routeProtect, initializeMembershipFee);
-router.post("/membership-fee/verify", routeProtect, SavingsValidate.validateVerifyMembershipFee, verifyMembershipFee);
+// /membership-fee/verify was removed: browser callbacks cannot confirm a payment.
 
 module.exports = router;

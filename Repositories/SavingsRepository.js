@@ -1,16 +1,24 @@
 const Savings = require("../Models/SavingsModel");
 const User = require("../Models/UserModel");
 
+// Savings balances/reports/history must never include SocketMinutes checkout
+// records, even legacy records written before model separation was enforced.
+const SAVINGS_LEDGER_SCOPE = {
+  type: { $in: ["deposit", "withdrawal"] },
+  category: { $ne: "minutes_payment" },
+};
+
 const SavingsRepository = {
-  findCompletedForUser: (userId) => Savings.find({ userId, status: "completed" }).sort({ createdAt: -1 }),
+  findCompletedForUser: (userId) =>
+    Savings.find({ userId, status: "completed", ...SAVINGS_LEDGER_SCOPE }).sort({ createdAt: -1 }),
 
   findForUser: (userId, skip, limit) =>
-    Savings.find({ userId })
+    Savings.find({ userId, ...SAVINGS_LEDGER_SCOPE })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit),
 
-  countForUser: (userId) => Savings.countDocuments({ userId }),
+  countForUser: (userId) => Savings.countDocuments({ userId, ...SAVINGS_LEDGER_SCOPE }),
 
   findUserById: (userId) => User.findById(userId),
 
@@ -24,7 +32,7 @@ const SavingsRepository = {
   },
 
   getNetSavings: async (userId) => {
-    const completedSavings = await Savings.find({ userId, status: "completed" });
+    const completedSavings = await Savings.find({ userId, status: "completed", ...SAVINGS_LEDGER_SCOPE });
     return completedSavings.reduce((sum, item) => {
       if (item.type === "withdrawal") return sum - item.amount;
       if (item.type === "deposit") return sum + item.amount;
@@ -50,6 +58,7 @@ const SavingsRepository = {
     Savings.find({
       userId,
       type: "deposit",
+      category: { $ne: "minutes_payment" },
       status: "completed",
       createdAt: { $gte: sinceDate },
     }),

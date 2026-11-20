@@ -26,13 +26,6 @@ const tierCommitmentSchema = Joi.object({
   newCommitment: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
 });
 
-const verifyMembershipFeeSchema = Joi.object({
-  reference: Joi.string().trim().optional(),
-  tx_ref: Joi.string().trim().optional(),
-  transaction_id: Joi.alternatives().try(Joi.string().trim(), Joi.number()).optional(),
-  transactionId: Joi.alternatives().try(Joi.string().trim(), Joi.number()).optional(),
-}).or("reference", "tx_ref", "transaction_id", "transactionId");
-
 const validateWithdrawRequest = (req, res, next) => {
   const { error, value } = withdrawRequestSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
   if (error) {
@@ -60,20 +53,10 @@ const validateTierCommitment = (req, res, next) => {
   next();
 };
 
-const validateVerifyMembershipFee = (req, res, next) => {
-  const { error, value } = verifyMembershipFeeSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
-  if (error) {
-    throw new AppError(formatValidationError(error), 400);
-  }
-  req.body = value;
-  next();
-};
-
 const SavingsValidate = {
   validateWithdrawRequest,
   validateDirectWithdraw,
   validateTierCommitment,
-  validateVerifyMembershipFee,
 };
 
 module.exports = SavingsValidate;

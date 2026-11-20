@@ -43,11 +43,25 @@ const isValidType = (t) => Object.prototype.hasOwnProperty.call(MODELS, t);
 /* Idempotent record helpers (dual-write at settlement points)         */
 /* ------------------------------------------------------------------ */
 
+// ReceiptService owns metadata.receiptEmail*. A later transaction upsert must
+// never replace the whole metadata object and erase that exactly-once claim.
+const mergeableMetadata = (metadata) =>
+  Object.fromEntries(
+    Object.entries(metadata || {}).filter(([key]) => !key.startsWith("receiptEmail"))
+  );
+
 const upsertByReference = async (Model, reference, data) => {
   if (!reference) return null;
+  const { metadata, ...fields } = data;
+  const metadataUpdates = Object.fromEntries(
+    Object.entries(mergeableMetadata(metadata)).map(([key, value]) => [
+      `metadata.${key}`,
+      value,
+    ])
+  );
   return Model.findOneAndUpdate(
     { reference },
-    { $set: { ...data, reference } },
+    { $set: { ...fields, reference, ...metadataUpdates } },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
 };
@@ -394,4 +408,6 @@ module.exports = {
   dedupeTransactions,
   matchesSearch,
   MODELS,
+  // Exposed for unit testing metadata preservation
+  upsertByReference,
 };

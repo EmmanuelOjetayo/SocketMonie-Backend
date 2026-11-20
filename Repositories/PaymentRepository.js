@@ -2,17 +2,47 @@ const Savings = require("../Models/SavingsModel");
 const User = require("../Models/UserModel");
 const Loan = require("../Models/LoanModel");
 const Minutes = require("../Models/MinutesModel");
+const LoanTransaction = require("../Models/LoanTransactionModel");
+const MinuteTransaction = require("../Models/MinuteTransactionModel");
+const MembershipTransaction = require("../Models/MembershipTransactionModel");
+
+// Savings is the system of record for savings deposits/withdrawals ONLY.
+// Legacy SocketMinutes checkout rows were written here with
+// `category: "minutes_payment"`; they are deliberately excluded so they can
+// never leak into savings balances, reports or history.
+const SAVINGS_SCOPE = { type: "deposit", category: { $ne: "minutes_payment" } };
 
 const PaymentRepository = {
   findUser: (userId) => User.findById(userId),
 
-  findSavingsByReference: (reference) => Savings.findOne({ reference }),
+  findSavingsByReference: (reference) => Savings.findOne({ reference, ...SAVINGS_SCOPE }),
 
-  isTransactionProcessed: async (providerRef, model = "savings", refField = "flutterwaveRef") => {
+  isTransactionProcessed: async (providerRef, model = "savings") => {
     if (!providerRef) return false;
-    const targetModel = model === "loan" ? Loan : model === "minutes" ? Minutes : Savings;
-    const existing = await targetModel.findOne({ [refField]: String(providerRef), status: "completed" });
-    return !!existing;
+    const providerId = String(providerRef);
+    if (model === "minutes") {
+      return !!(await MinuteTransaction.findOne({
+        $or: [{ transactionId: providerId }, { "metadata.providerTransactionId": providerId }],
+        status: "completed",
+      }));
+    }
+    if (model === "membership") {
+      return !!(await MembershipTransaction.findOne({
+        $or: [{ transactionId: providerId }, { "metadata.providerTransactionId": providerId }],
+        status: "completed",
+      }));
+    }
+    if (model === "loan") {
+      return !!(await LoanTransaction.findOne({
+        $or: [{ transactionId: providerId }, { "metadata.providerTransactionId": providerId }],
+        status: "completed",
+      }));
+    }
+    return !!(await Savings.findOne({
+      ...SAVINGS_SCOPE,
+      $or: [{ transactionId: providerId }, { flutterwaveRef: providerId }],
+      status: "completed",
+    }));
   },
 
   createPendingDeposit: (data) => Savings.create(data),
@@ -20,7 +50,8 @@ const PaymentRepository = {
   findAndCompleteDeposit: (reference, updateData, session = null) =>
     Savings.findOneAndUpdate(
       // Never let the deposit settlement path complete a Socket Minutes checkout
-      { reference, status: "pending", category: { $ne: "minutes_payment" } },
+      // or a loan repayment checkout record.
+      { reference, status: "pending", ...SAVINGS_SCOPE },
       { $set: updateData },
       { new: true, ...(session ? { session } : {}) }
     ),
@@ -40,8 +71,15 @@ const PaymentRepository = {
 
   findLoanByPayoutReference: (reference) => Loan.findOne({ payoutReference: reference }),
 
+  // Each payment category resolves through its own dedicated transaction model.
   findRepaymentByReference: (reference) =>
-    Savings.findOne({ reference, type: "loan_repayment", status: "pending" }),
+    LoanTransaction.findOne({ reference, type: "loan_repayment" }),
+
+  findMinutesCheckoutByReference: (reference) =>
+    MinuteTransaction.findOne({ reference, type: "minute_contribution" }),
+
+  findMembershipTransactionByReference: (reference) =>
+    MembershipTransaction.findOne({ reference, type: "membership_fee" }),
 
   findUserByMembershipRef: (reference) => User.findOne({ membershipFeeTxRef: reference }),
 

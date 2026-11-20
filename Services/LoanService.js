@@ -223,6 +223,10 @@ const applyForLoan = async ({
   const interestAmount = interestCalc.interestAmount;
   const totalRepayable = Number(amount);
   const disbursementAmount = Number(amount) - interestAmount;
+  // Each of the four guarantors is liable for at most 25% of the original
+  // approved principal. The principal is the repayable amount under the fixed
+  // 2% upfront-interest model.
+  const guarantorLiability = Math.round(totalRepayable * 0.25 * 100) / 100;
 
   const activeStatuses = [
     "waiting_guarantor",
@@ -327,8 +331,8 @@ const applyForLoan = async ({
           referralCode: g.referralCode,
           status: "pending",
           verificationToken,
-          guaranteedAmount: totalRepayable,
-          remainingGuaranteedBalance: totalRepayable,
+          guaranteedAmount: guarantorLiability,
+          remainingGuaranteedBalance: guarantorLiability,
           isReplaced: false,
         })),
       };
@@ -340,8 +344,8 @@ const applyForLoan = async ({
         guarantorEmail: g.email,
         guarantorPhone: g.phone || "Not provided",
         relationship: "cooperative member",
-        guaranteedAmount: totalRepayable,
-        remainingGuaranteedBalance: totalRepayable,
+        guaranteedAmount: guarantorLiability,
+        remainingGuaranteedBalance: guarantorLiability,
         verificationToken,
         tokenExpiresAt: expiresAt,
         status: "pending",
@@ -457,6 +461,8 @@ const cancelApplication = async ({ userId, loanId, reason }) => {
 const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarantorReferralCode, reason }) => {
   const loan = await LoanRepository.findById(loanId);
   if (!loan) throw new AppError("Loan not found.", 404);
+  const guarantorLiability =
+    Math.round(Number(loan.totalRepayable || 0) * 0.25 * 100) / 100;
 
   if (loan.userId.toString() !== userId.toString()) {
     throw new AppError("You are not authorized to modify this loan application.", 403);
@@ -556,8 +562,8 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
           guarantorEmail: newGuarantorUser.email,
           guarantorPhone: newGuarantorUser.phone || "Not provided",
           relationship: "cooperative member",
-          guaranteedAmount: loan.totalRepayable,
-          remainingGuaranteedBalance: loan.totalRepayable,
+          guaranteedAmount: guarantorLiability,
+          remainingGuaranteedBalance: guarantorLiability,
           verificationToken,
           tokenExpiresAt,
           status: "pending",
@@ -576,8 +582,8 @@ const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarant
         referralCode: newGuarantorUser.referralCode,
         status: "pending",
         verificationToken,
-        guaranteedAmount: loan.totalRepayable,
-        remainingGuaranteedBalance: loan.totalRepayable,
+        guaranteedAmount: guarantorLiability,
+        remainingGuaranteedBalance: guarantorLiability,
         requestedAt: now,
         isReplaced: false,
       });

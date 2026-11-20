@@ -12,14 +12,8 @@ router.post(
   paymentController.initiateDeposit
 );
 
-router.get("/deposit/callback", paymentController.paymentCallback);
-
-router.post(
-  "/deposit/verify",
-  protect,
-  PaymentValidate.validateVerifyDeposit,
-  paymentController.verifyDeposit
-);
+// Callback-based confirmation endpoints were removed deliberately. The browser
+// redirect is only navigation; the signed webhook is the sole confirmation path.
 
 router.post("/webhook", paymentController.webhook);
 
@@ -40,6 +34,6 @@ router.get("/banks", protect, paymentController.getBanksList);
 const MinuteController = require("../Controllers/MinuteController");
 router.get("/minutes/due", protect, MinuteController.getMinutesDue);
 router.post("/minutes/initialize", protect, MinuteController.initializeMinutes);
-router.post("/minutes/verify", protect, MinuteController.verifyMinutes);
+// /minutes/verify was removed: browser callbacks cannot confirm a payment.
 
 module.exports = router;

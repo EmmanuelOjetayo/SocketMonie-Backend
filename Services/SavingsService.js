@@ -1,17 +1,14 @@
 const bcrypt = require("bcrypt");
-const crypto = require("crypto");
 const { SavingsRepository } = require("../Repositories/SavingsRepository");
 const { getMinCommitmentForTier, getTierBySavings, canUpgradeToTier } = require("../Utilis/tierService");
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
-const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
-const { ReferralService } = require("./ReferralService");
-const { recordMembershipTransaction } = require("./TransactionService");
-const MembershipTransaction = require("../Models/MembershipTransactionModel");
-const { sendPaymentReceiptSafe } = require("./ReceiptService");
 const AppError = require("../Utilis/AppError");
-const { MEMBERSHIP_FEE_AMOUNT, WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
-const { isSuccessfulStatus } = require("../Utilis/paymentStatus");
+const { WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
+const { MembershipService } = require("./MembershipService");
+
+// Membership checkout is owned by MembershipService and settled only by the
+// signed Flutterwave webhook. No browser callback can confirm this payment.
 
 // Available balance: completed net savings minus withdrawals already reserved
 // by pending/approved-but-unpaid requests (prevents concurrent double-spend).
@@ -309,167 +306,8 @@ const requestWithdrawal = async ({ userId, amount, accountNumber, accountName, b
   };
 };
 
-const initializeMembershipFee = async (userId) => {
-  const user = await SavingsRepository.findUserById(userId);
-  if (!user) {
-    throw new AppError("User not found.", 404);
-  }
-
-  if (user.membershipFeePaid) {
-    throw new AppError("Membership fee has already been paid for this account.", 400);
-  }
-
-  // Reference shape (restored): `MEM_<ts>_<hex>_<userId[-6]>` — underscore
-  // format REQUIRED because the webhook dispatcher (processWebhook) routes
-  // by `reference.startsWith("MEM_")`, and the reconciliation sweep filters
-  // `/^MEM_/`. Hyphen refs (fix 2) never reached their handler.
-  const tx_ref = `MEM_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${user._id
-    .toString()
-    .slice(-6)}`;
-  user.membershipFeeTxRef = tx_ref;
-  await user.save();
-
-  return {
-    publicKey: FLW_PUBLIC_KEY,
-    public_key: FLW_PUBLIC_KEY,
-    reference: tx_ref,
-    tx_ref,
-    txRef: tx_ref,
-    amount: MEMBERSHIP_FEE_AMOUNT,
-    currency: "NGN",
-    // Working-project customer shape (fix 1): only documented keys and
-    // never an EMPTY phone — Flutterwave's telemetry/event endpoints 400
-    // on empty customer fields (`key customer.id must not contain '.`
-    // surfaced from exactly this checkout).
-    customer: {
-      email: user.email,
-      name: user.fullName,
-      phone_number: user.phone || "08000000000",
-    },
-    customizations: {
-      title: "SocketMonnie Membership Fee",
-      description: "Pay 1000 NGN to continue using the service.",
-      logo: process.env.APP_LOGO || "",
-    },
-    meta: { userId: user._id.toString(), type: "membership_fee" },
-    metadata: { userId: user._id.toString(), type: "membership_fee" },
-    // Split-payment subaccount — present ONLY in this one-time checkout payload.
-    subaccount_id: FLW_SUBACCOUNT_ID || undefined,
-  };
-};
-
-const verifyMembershipFee = async ({ userId, reference, tx_ref, transaction_id, transactionId }) => {
-  const txId = transaction_id || transactionId || null;
-  const paymentRef = tx_ref || reference || null;
-  console.log(`[MEMBERSHIP] ① verifyMembershipFee | ref: ${paymentRef} | TX: ${txId} | userId: ${userId}`);
-  if (!paymentRef && !txId) {
-    throw new AppError("Payment reference is required.", 400);
-  }
-
-  // Prefer the numeric Flutterwave transaction id (authoritative).
-  const verification =
-    txId && /^\d+$/.test(String(txId).trim())
-      ? await verifyTransactionById(String(txId).trim())
-      : await verifyPayment(paymentRef);
-  const payment = verification?.data;
-
-  console.log(
-    `[MEMBERSHIP] ② FLW verify | ref: ${paymentRef} | TX: ${txId} | verifyStatus: ${verification?.status} | dataStatus: ${payment?.status || "—"} | tx_ref: ${payment?.tx_ref || "—"}`
-  );
-
-  // tx_ref returned by Flutterwave must match the expected SocketMonnie reference.
-  const flwTxRef = String(payment?.tx_ref || payment?.reference || "").trim();
-  if (paymentRef && flwTxRef && flwTxRef !== String(paymentRef).trim()) {
-    console.log(`[MEMBERSHIP] ✗ tx_ref mismatch | expected: ${paymentRef} | got: ${flwTxRef} — throwing`);
-    throw new AppError("Invalid transaction reference", 400);
-  }
-  if (String(payment?.currency || "NGN").toUpperCase() !== "NGN") {
-    console.log(`[MEMBERSHIP] ✗ currency mismatch — throwing`);
-    throw new AppError("Currency mismatch.", 400);
-  }
-
-  if (verification?.status === "success" && isSuccessfulStatus(payment?.status)) {
-    const amountPaid = Number(payment.charged_amount ?? payment.amount_settled ?? payment.amount ?? 0);
-    console.log(`[MEMBERSHIP] ③ FLW OK | amountPaid: ${amountPaid} (fee: ${MEMBERSHIP_FEE_AMOUNT})`);
-    if (amountPaid < MEMBERSHIP_FEE_AMOUNT) {
-      console.log(`[MEMBERSHIP] ✗ amount below fee — throwing (insufficient) | amountPaid: ${amountPaid}`);
-      throw new AppError(
-        `Payment amount (₦${amountPaid.toLocaleString()}) is less than the required membership fee of ₦${MEMBERSHIP_FEE_AMOUNT.toLocaleString()}.`,
-        400
-      );
-    }
-
-    const user = await SavingsRepository.findUserById(userId);
-    console.log(`[MEMBERSHIP] ④ user found | membershipFeePaid before: ${user?.membershipFeePaid}`);
-    if (!user) {
-      throw new AppError("User not found.", 404);
-    }
-
-    // Workflow K: a paid membership fee may qualify a pending referral (idempotent,
-    // evaluates the configured qualification event; safe for replays).
-    await ReferralService.processQualification(userId, "membership_fee_paid");
-
-    // Ownership: the verified tx must belong to this user (via stored ref or FLW meta).
-    const metaUserId = String(payment?.meta?.userId || payment?.metadata?.userId || payment?.meta?.user_id || "");
-    if (metaUserId && metaUserId !== String(userId)) {
-      throw new AppError("This transaction does not belong to your account.", 403);
-    }
-
-    if (user.membershipFeePaid) {
-      console.log(`[MEMBERSHIP] ✗ alreadyPaid | user ${userId} — returning idempotent success`);
-      return {
-        alreadyPaid: true,
-        membershipFeePaid: true,
-      };
-    }
-
-    console.log(`[MEMBERSHIP] ⑤ DB update | marking user ${userId} membershipFeePaid: true`);
-    user.membershipFeePaid = true;
-    user.membershipFeeTxRef = flwTxRef || paymentRef;
-    user.membershipFeePaidAt = new Date();
-    await user.save();
-
-    // Dual-write: dedicated membership transaction record (idempotent by reference).
-    await recordMembershipTransaction({
-      userId,
-      reference: String(flwTxRef || paymentRef),
-      transactionId: String(payment?.id || txId || flwTxRef || paymentRef),
-      amount: MEMBERSHIP_FEE_AMOUNT,
-      currency: "NGN",
-      status: "completed",
-      method: "flutterwave",
-      paidAt: user.membershipFeePaidAt || new Date(),
-      metadata: { source: "verifyMembershipFee" },
-    });
-
-    // Receipt: exactly-once email for the settled fee (idempotent claim).
-    await sendPaymentReceiptSafe({
-      userId,
-      Model: MembershipTransaction,
-      type: "membership_fee",
-      reference: String(flwTxRef || paymentRef),
-      transactionId: String(payment?.id || txId || flwTxRef || paymentRef),
-      amount: MEMBERSHIP_FEE_AMOUNT,
-      currency: "NGN",
-      paidAt: user.membershipFeePaidAt || new Date(),
-    });
-
-    // SocketScore: membership fee is verified financial activity.
-    try {
-      await updateUserScore(userId, "membership_fee_paid");
-    } catch (scoreErr) {
-      console.error(`Membership score update failed for user ${userId}:`, scoreErr?.message || scoreErr);
-    }
-
-    return {
-      alreadyPaid: false,
-      membershipFeePaid: true,
-      membershipFeePaidAt: user.membershipFeePaidAt,
-    };
-  } else {
-    throw new AppError("Payment verification failed or insufficient amount.", 400);
-  }
-};
+const initializeMembershipFee = async (userId) =>
+  MembershipService.initializeMembershipFee(userId);
 
 const updateTierCommitment = async ({ userId, newTier, newCommitment }) => {
   const targetTierKey = (newTier || "").toLowerCase();
@@ -518,7 +356,6 @@ const SavingsService = {
   withdrawFromSavings,
   requestWithdrawal,
   initializeMembershipFee,
-  verifyMembershipFee,
   updateTierCommitment,
   updateUserTierAndScore,
 };
