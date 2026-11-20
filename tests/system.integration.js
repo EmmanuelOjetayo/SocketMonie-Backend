@@ -301,15 +301,15 @@ async function runBatch1() {
   r = await req("/api/savings/tier-commitment", "PUT", { newTier: "invalid", newCommitment: 100 }, H);
   t(32, "PUT tier-commitment invalid tier -> 400", r.status === 400, `got ${r.status}`);
 
-  r = await req("/api/savings/membership-fee/initialize", "POST", null, H);
+  r = await req("/api/membership/initialize", "POST", null, H);
   const mf = JSON.parse(r.body); const mfp = mf?.data || mf;
   // The seeded member fixture has already settled the fee, so the endpoint
   // legitimately answers "already paid" (400); what must hold is a handled
   // response (no unhandled 500).
-  t(33, "POST membership-fee/initialize handled (200/400)", r.status === 200 || r.status === 400, `got ${r.status}`);
+  t(33, "POST /api/membership/initialize handled (200/400)", r.status === 200 || r.status === 400, `got ${r.status}`);
 
   r = await req("/api/savings/membership-fee/verify", "POST", { tx_ref: "FAKE" }, H);
-  t(34, "POST membership-fee/verify fake -> 400", r.status === 400, `got ${r.status}`);
+  t(34, "POST membership-fee/verify removed -> 404", r.status === 404, `got ${r.status}`);
 
   r = await req("/api/savings/summary", "GET");
   t(35, "GET savings/summary unauthenticated -> 401", r.status === 401, `got ${r.status}`);

@@ -245,6 +245,22 @@ test("failed guarantor collection reduces the guarantor SocketScore by 10", () =
   assert.ok(defaulterEngine.includes('attemptFailed ? "failed" : "pending"'));
 });
 
+test("webhook replays retry receipt delivery without duplicating it", () => {
+  assert.ok(
+    paymentService.includes("const retrySettledReceipt = (args) => sendPaymentReceiptSafe(args)")
+  );
+  for (const model of [
+    "SavingsTransaction",
+    "LoanTransaction",
+    "MembershipTransaction",
+    "MinuteTransaction",
+  ]) {
+    assert.ok(paymentService.includes(`Model: ${model},`), model);
+  }
+  assert.ok(paymentService.includes("already processed - checking receipt claim"));
+  assert.ok(paymentService.includes("membershipWebhookRetry"));
+});
+
 test("receipt service still uses the atomic claim states", () => {
   const receipt = read("Services/ReceiptService.js");
   assert.ok(receipt.includes('"metadata.receiptEmailState": { $nin: ["claiming", "sent"] }'));
@@ -258,13 +274,43 @@ test("overpayment state remains review-only, never an automatic refund", () => {
   assert.ok(!loanService.includes("issueRefund("));
 });
 
-test("SavingsService loads with only the webhook-only initializer", () => {
+test("membership checkout is owned by its own service, controller and route", () => {
   const { SavingsService } = require("../Services/SavingsService");
-  assert.equal(typeof SavingsService.initializeMembershipFee, "function");
+  assert.equal("initializeMembershipFee" in SavingsService, false);
   assert.equal("verifyMembershipFee" in SavingsService, false);
+
+  const savingsController = require("../Controllers/SavingsController");
+  assert.equal("initializeMembershipFee" in savingsController, false);
+  assert.equal("verifyMembershipFee" in savingsController, false);
+
+  const { initializeMembershipFee } = require("../Controllers/MembershipController");
+  assert.equal(typeof initializeMembershipFee, "function");
+
+  const membershipRoutes = read("Routes/MembershipRoutes.js");
+  assert.ok(membershipRoutes.includes('MembershipRoutes.post("/initialize"'));
+  assert.ok(!read("Routes/SavingsRoute.js").includes("membership-fee"));
+  assert.ok(read("Server/app.js").includes('app.use("/api/membership", MembershipRoutes)'));
 });
 
-test("SavingsController loads without a stale callback verifier export", () => {
-  const controller = require("../Controllers/SavingsController");
-  assert.equal("verifyMembershipFee" in controller, false);
+test("no callback or browser verify settlement handlers remain", () => {
+  const paymentController = read("Controllers/PaymentController.js");
+  assert.ok(!paymentController.includes("paymentCallback"));
+  assert.ok(!paymentController.includes("exports.verifyDeposit"));
+
+  assert.ok(!paymentService.includes("const verifyDeposit"));
+  assert.ok(!paymentService.includes("const reconcileDepositByReference"));
+  assert.ok(!paymentService.includes("const reconcilePaymentByReference"));
+
+  const loanController = read("Controllers/LoanController.js");
+  const loanServiceSource = read("Services/LoanService.js");
+  assert.ok(!loanController.includes("exports.verifyLoanRepayment"));
+  assert.ok(!loanServiceSource.includes("const verifyLoanRepayment"));
+
+  assert.ok(!read("Middleware/PaymentValidate.js").includes("validateVerifyDeposit"));
+  assert.ok(!read("Middleware/LoanValidate.js").includes("validateRepayVerify"));
+
+  const serviceExports = require("../Services/PaymentService").PaymentService;
+  assert.equal("verifyDeposit" in serviceExports, false);
+  assert.equal("reconcileDepositByReference" in serviceExports, false);
+  assert.equal("reconcilePaymentByReference" in serviceExports, false);
 });

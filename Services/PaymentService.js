@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { startSafeSession } = require("../Utilis/transactionRunner");
 const { PaymentRepository } = require("../Repositories/PaymentRepository");
-const { FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID, verifyPayment, verifyTransactionById, verifyAccount, getBanks } = require("../Utilis/Flutterwave");
+const { FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID, verifyTransactionById, verifyAccount, getBanks } = require("../Utilis/Flutterwave");
 const { processLoanRepayment } = require("../Services/LoanService");
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
@@ -33,14 +33,18 @@ const { sendPaymentReceiptSafe } = require("./ReceiptService");
 
 const TERMINAL_FAILURE_STATUSES = ["failed", "cancelled", "canceled", "error", "declined", "abandoned", "reversed", "terminated"];
 
+// Safe on a webhook replay: ReceiptService's atomic claim means a `sent`
+// receipt is never duplicated, while a `failed` receipt can be retried.
+const retrySettledReceipt = (args) => sendPaymentReceiptSafe(args);
+
 const initiateDeposit = async (userId, amount, method) => {
   const user = await PaymentRepository.findUser(userId);
   if (!user) throw new AppError("User not found", 404);
 
   // Reference shape (restored): `DEP_<ts>_<hex>_<userId[-6]>` — underscore
   // format REQUIRED because the webhook dispatcher (processWebhook) routes
-  // by `reference.startsWith("DEP_")`, and the reconciliation sweep filters
-  // `/^DEP_/`. Hyphen refs (fix 2) never reached their handler.
+  // by `reference.startsWith("DEP_")`. Hyphen refs (fix 2) never reached their
+  // handler. No polling/reconciliation path settles a payment.
   const reference = `DEP_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
     .toString()
     .slice(-6)}`;
@@ -74,206 +78,6 @@ const initiateDeposit = async (userId, amount, method) => {
   };
 };
 
-const resolveVerification = async ({ ref, transactionId }) => {
-  // Prefer the authoritative numeric Flutterwave transaction id when supplied.
-  if (transactionId && /^\d+$/.test(String(transactionId).trim())) {
-    const byId = await verifyTransactionById(String(transactionId).trim());
-    return byId;
-  }
-  if (!ref) throw new AppError("Payment reference is required.", 400);
-  return verifyPayment(ref);
-};
-
-const assertFlwSuccess = (verification) => {
-  if (!verification || verification.status !== "success") {
-    throw new AppError("Unable to verify payment with Flutterwave.", 400);
-  }
-  const data = verification.data || {};
-  const status = String(data.status || "").toLowerCase();
-  if (!isSuccessfulStatus(status)) {
-    throw new AppError(`Payment not successful. Status: ${data.status || "unknown"}`, 400);
-  }
-  return data;
-};
-
-const verifyDeposit = async (userId, ref, transactionId) => {
-  if (!ref && !transactionId) throw new AppError("Payment reference is required.", 400);
-
-  const verification = await resolveVerification({ ref, transactionId });
-  const data = assertFlwSuccess(verification);
-
-  const flwTxRef = String(data.tx_ref || data.reference || ref || "").trim();
-  // The tx_ref returned by Flutterwave must match an expected SocketMonnie reference.
-  if (ref && flwTxRef && flwTxRef !== String(ref).trim()) {
-    throw new AppError("Payment reference mismatch.", 400);
-  }
-  if (String(data.currency || "NGN").toUpperCase() !== "NGN") {
-    throw new AppError("Currency mismatch.", 400);
-  }
-
-  const lookupRef = flwTxRef || String(ref).trim();
-  const existingSavings = await PaymentRepository.findSavingsByReference(lookupRef);
-  if (!existingSavings) {
-    throw new AppError("Deposit not found", 404);
-  }
-  // Defensive: a SocketMinutes checkout is authorised against the minutes
-  // settlement path only. It must never be completed as a savings deposit.
-  if (String(existingSavings.category || "").toLowerCase() === "minutes_payment" || /^MIN_/i.test(lookupRef)) {
-    throw new AppError("This reference is a Socket Minutes payment. Complete it via the minutes flow.", 400);
-  }
-  // Ownership comes BEFORE the completed-state fast path so a caller can never
-  // probe another member's transaction reference (403 vs 404/already-settled).
-  if (String(existingSavings.userId) !== String(userId)) {
-    throw new AppError("This transaction does not belong to your account.", 403);
-  }
-  if (existingSavings.status === "completed") {
-    // Replay of an already-settled deposit: re-run the idempotent referral
-    // qualification so a transient failure from the first pass self-heals.
-    await ReferralService.processQualification(existingSavings.userId, "first_deposit");
-    return { alreadyVerified: true };
-  }
-  // Amount: Flutterwave amount (major units) must cover the expected amount.
-  const paidAmount = Number(data.charged_amount ?? data.amount ?? 0);
-  if (!paidAmount || paidAmount < Number(existingSavings.amount || 0)) {
-    throw new AppError(
-      `Amount mismatch. Expected ₦${Number(existingSavings.amount || 0).toLocaleString()}, received ₦${paidAmount.toLocaleString()}.`,
-      400
-    );
-  }
-
-  const settledAmount = Number(data.amount_settled ?? data.amount ?? existingSavings.amount);
-
-  const session = await startSafeSession();
-  let savings;
-  try {
-    await session.withTransaction(async () => {
-      savings = await PaymentRepository.findAndCompleteDeposit(lookupRef, {
-        status: "completed",
-        flutterwaveRef: String(data.id),
-        transactionId: String(data.id),
-        flwRef: data.flw_ref || undefined,
-        amount: settledAmount,
-      }, session);
-      if (!savings) return;
-      await FinancialLedgerService.recordEntry({
-        entryType: "inflow",
-        accountCategory: "member_savings",
-        activityType: "savings_deposit",
-        amount: savings.amount,
-        reference: ref,
-        userId: savings.userId,
-        relatedId: savings._id,
-        relatedModel: "Savings",
-        notes: "Verified savings deposit",
-        session,
-      });
-    });
-  } finally {
-    await session.endSession();
-  }
-
-  if (!savings) {
-    return { alreadyVerified: true };
-  }
-
-  // Dual-write: dedicated savings transaction record (idempotent by reference).
-  await recordSavingsTransaction({
-    userId: savings.userId,
-    type: savings.type === "withdrawal" ? "withdrawal" : "deposit",
-    reference: savings.reference || lookupRef,
-    transactionId: String(data.id),
-    amount: savings.amount,
-    fee: savings.fee || 0,
-    currency: "NGN",
-    status: "completed",
-    method: savings.method || "flutterwave",
-    paidAt: new Date(),
-    metadata: { savingsId: String(savings._id), source: "verifyDeposit" },
-  });
-
-  // Receipt: exactly-once email for the settled deposit (idempotent claim).
-  await sendPaymentReceiptSafe({
-    userId: savings.userId,
-    Model: SavingsTransaction,
-    type: savings.type === "withdrawal" ? "withdrawal" : "deposit",
-    reference: savings.reference || lookupRef,
-    transactionId: String(data.id),
-    amount: savings.amount,
-    currency: "NGN",
-    paidAt: new Date(),
-  });
-
-  await updateUserScore(savings.userId, "deposit");
-
-  // Workflow K: may qualify a pending referral (idempotent).
-  await ReferralService.processQualification(savings.userId, "first_deposit");
-
-  await createNotification({
-    userId: savings.userId,
-    type: "savings",
-    title: "Deposit Successful",
-    message: `Your deposit of ₦${savings.amount.toLocaleString()} was successful.`,
-  });
-
-  await logAudit({
-    userId: savings.userId,
-    action: "deposit",
-    targetType: "savings",
-    targetId: savings._id,
-    details: {
-      amount: savings.amount,
-      reference: lookupRef,
-      transactionId: String(data.id),
-    },
-  });
-
-  return { alreadyVerified: false, savings };
-};
-
-/**
- * Server-side callback reconciliation (P0-001).
- * Called from the Flutterwave redirect handler so a missed/delayed webhook
- * still gets the deposit settled idempotently. Bound to the deposit record's
- * own owner (the reference was generated server-side at initiation), so no
- * unauthenticated ownership bypass is possible.
- */
-const reconcileDepositByReference = async (ref, transactionId) => {
-  const lookupRef = String(ref || "").trim();
-  if (!lookupRef) return { state: "missing_reference" };
-
-  let pending = null;
-  try {
-    pending = await PaymentRepository.findSavingsByReference(lookupRef);
-  } catch (e) {
-    console.error("Callback reconciliation lookup failed:", e?.message || e);
-    return { state: "pending" };
-  }
-  if (!pending) return { state: "not_found" };
-  if (pending.status === "completed") return { state: "already_verified" };
-
-  try {
-    const result = await verifyDeposit(pending.userId, lookupRef, transactionId || null);
-    return { state: result.alreadyVerified ? "already_verified" : "completed" };
-  } catch (err) {
-    const message = String(err?.message || "");
-    if (err?.statusCode === 400 && /not successful/i.test(message)) {
-      return { state: "failed", reason: "payment_not_successful" };
-    }
-    if (err?.statusCode === 400 && /amount mismatch/i.test(message)) {
-      return { state: "failed", reason: "amount_mismatch" };
-    }
-    if (err?.statusCode === 400 && /reference mismatch/i.test(message)) {
-      return { state: "failed", reason: "reference_mismatch" };
-    }
-    if (err?.statusCode === 400 && /currency/i.test(message)) {
-      return { state: "failed", reason: "currency_mismatch" };
-    }
-    // Provider lag / timeout / unexpected error: do NOT mark success or failure.
-    // Leave the deposit pending for the webhook or fallback reconciliation.
-    console.error("Callback reconciliation deferred:", message);
-    return { state: "pending" };
-  }
-};
 
 const handleDepositWebhook = async (data) => {
   const reference = data.tx_ref || data.reference;
@@ -341,7 +145,20 @@ const handleDepositWebhook = async (data) => {
   console.log(`[DEPOSIT WEBHOOK] ② FLW re-verify OK | ref match | NGN | amount verified`);
 
   if (await PaymentRepository.isTransactionProcessed(transactionId, "savings")) {
-    console.log(`[DEPOSIT WEBHOOK] ✗ transaction ${transactionId} already processed — idempotent skip`);
+    console.log(`[DEPOSIT WEBHOOK] transaction ${transactionId} already processed - checking receipt claim`);
+    const settledTx = await SavingsTransaction.findOne({ reference }).lean();
+    if (settledTx) {
+      await retrySettledReceipt({
+        userId: settledTx.userId,
+        Model: SavingsTransaction,
+        type: settledTx.type === "withdrawal" ? "withdrawal" : "deposit",
+        reference,
+        transactionId: String(transactionId),
+        amount: Number(settledTx.amount || 0),
+        currency: "NGN",
+        paidAt: settledTx.paidAt || new Date(),
+      });
+    }
     return;
   }
   const finalSettled = Number(v.amount_settled ?? v.amount ?? settledAmount);
@@ -666,7 +483,20 @@ const handleRepaymentWebhook = async (data) => {
   }
 
   if (await PaymentRepository.isTransactionProcessed(transactionId, "loan")) {
-    console.log(`[REPAYMENT WEBHOOK] ✗ transaction ${transactionId} already processed — idempotent skip`);
+    console.log(`[REPAYMENT WEBHOOK] transaction ${transactionId} already processed - checking receipt claim`);
+    const settledTx = await LoanTransaction.findOne({ reference }).lean();
+    if (settledTx) {
+      await retrySettledReceipt({
+        userId: settledTx.userId,
+        Model: LoanTransaction,
+        type: "loan_repayment",
+        reference,
+        transactionId: String(transactionId),
+        amount: Number(settledTx.amount || 0),
+        currency: "NGN",
+        paidAt: settledTx.paidAt || new Date(),
+      });
+    }
     return;
   }
 
@@ -814,6 +644,27 @@ const handleMembershipFeeWebhook = async (data) => {
   }
   if (user.membershipFeePaid) {
     console.log(`[MEMBERSHIP WEBHOOK] ✗ user ${user._id} already has membership paid — idempotent skip`);
+    await recordMembershipTransaction({
+      userId: user._id,
+      reference,
+      transactionId: String(transactionId),
+      amount: MEMBERSHIP_FEE_AMOUNT,
+      currency: "NGN",
+      status: "completed",
+      method: "flutterwave",
+      paidAt: user.membershipFeePaidAt || new Date(),
+      metadata: { source: "membershipWebhookRetry", providerTransactionId: String(transactionId) },
+    });
+    await retrySettledReceipt({
+      userId: user._id,
+      Model: MembershipTransaction,
+      type: "membership_fee",
+      reference,
+      transactionId: String(transactionId),
+      amount: MEMBERSHIP_FEE_AMOUNT,
+      currency: "NGN",
+      paidAt: user.membershipFeePaidAt || new Date(),
+    });
     return;
   }
 
@@ -834,6 +685,27 @@ const handleMembershipFeeWebhook = async (data) => {
   );
   if (!updatedUser) {
     console.log(`[MEMBERSHIP WEBHOOK] ✗ membership already activated by a concurrent event — idempotent skip`);
+    await recordMembershipTransaction({
+      userId: user._id,
+      reference,
+      transactionId: String(transactionId),
+      amount: MEMBERSHIP_FEE_AMOUNT,
+      currency: "NGN",
+      status: "completed",
+      method: "flutterwave",
+      paidAt: user.membershipFeePaidAt || new Date(),
+      metadata: { source: "membershipWebhookRetry", providerTransactionId: String(transactionId) },
+    });
+    await retrySettledReceipt({
+      userId: user._id,
+      Model: MembershipTransaction,
+      type: "membership_fee",
+      reference,
+      transactionId: String(transactionId),
+      amount: MEMBERSHIP_FEE_AMOUNT,
+      currency: "NGN",
+      paidAt: user.membershipFeePaidAt || new Date(),
+    });
     return;
   }
   console.log(`[MEMBERSHIP WEBHOOK] ④ DB updated | user ${updatedUser._id} membership activated`);
@@ -980,7 +852,22 @@ const handleMinuteWebhook = async (data) => {
     return;
   }
 
-  if (pendingPayment.status !== "pending") return;
+  if (pendingPayment.status !== "pending") {
+    if (pendingPayment.status === "completed") {
+      await retrySettledReceipt({
+        userId: pendingPayment.userId,
+        Model: MinuteTransaction,
+        type: "minute_contribution",
+        reference,
+        transactionId: String(transactionId),
+        amount: Number(pendingPayment.amount || 0),
+        currency: "NGN",
+        paidAt: pendingPayment.paidAt || pendingPayment.updatedAt || new Date(),
+        monthsSettled: Number(pendingPayment.metadata?.monthsSettled) || null,
+      });
+    }
+    return;
+  }
 
   // Settle exactly what this checkout paid for — never every outstanding
   // obligation. The checkout priced the earliest arrears into ONE reference
@@ -1271,58 +1158,6 @@ const processWebhook = async (rawBody, signature, event) => {
   return { status: "success" };
 };
 
-/**
- * FALLBACK 1+2 shared entrypoint: reconcile a payment by its tx_ref.
- *
- * Server-side only. Looks the reference up with Flutterwave, validates
- * status/amount/currency/reference, then routes it through the SAME
- * idempotent handlers the webhook uses — so a missing, delayed or rejected
- * webhook eventually resolves to the identical outcome without double credit.
- */
-const reconcilePaymentByReference = async (reference) => {
-  const ref = String(reference || "").trim();
-  if (!ref) throw new AppError("Payment reference is required.", 400);
-
-  const verification = await verifyPayment(ref);
-  const data = verification?.data || null;
-
-  if (!verification || verification.status !== "success" || !data) {
-    return { status: "unverified", reference: ref };
-  }
-
-  const flwStatus = String(data.status || "").toLowerCase();
-  if (flwStatus !== "successful") {
-    return { status: flwStatus || "unknown", reference: ref };
-  }
-
-  const normalizedData = {
-    ...data,
-    id: data.id,
-    tx_ref: String(data.tx_ref || data.reference || ref),
-    reference: String(data.tx_ref || data.reference || ref),
-    status: flwStatus,
-    charged_amount: Number(data.charged_amount ?? data.amount ?? 0),
-    amount: Number(data.amount ?? 0),
-    amount_settled: Number(data.amount_settled ?? data.amount ?? 0),
-    currency: data.currency || "NGN",
-  };
-
-  const targetRef = normalizedData.tx_ref;
-  if (targetRef.startsWith("DEP_")) {
-    await handleDepositWebhook(normalizedData);
-  } else if (targetRef.startsWith("LRP_") || targetRef.startsWith("RPL_")) {
-    await handleRepaymentWebhook(normalizedData);
-  } else if (targetRef.startsWith("MEM_")) {
-    await handleMembershipFeeWebhook(normalizedData);
-  } else if (targetRef.startsWith("MIN_")) {
-    await handleMinuteWebhook(normalizedData);
-  } else {
-    return { status: "ignored", reference: ref };
-  }
-
-  return { status: "reconciled", reference: ref };
-};
-
 
 /**
  * Mask an account number for logs: first 4 + last 4 visible so the real
@@ -1467,10 +1302,7 @@ const getPaymentStatus = async (userId, reference) => {
 };
 const PaymentService = {
   initiateDeposit,
-  verifyDeposit,
   processWebhook,
-  reconcilePaymentByReference,
-  reconcileDepositByReference,
   verifyBankAccount,
   getPaymentStatus,
   normalizeWebhookData,

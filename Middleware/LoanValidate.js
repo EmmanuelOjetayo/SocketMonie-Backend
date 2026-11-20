@@ -32,14 +32,6 @@ const repayInitializeSchema = Joi.object({
   paymentAmount: Joi.number().positive().min(100).max(MAX_TRANSACTION_AMOUNT).required(),
 });
 
-const repayVerifySchema = Joi.object({
-  loanId: Joi.string().trim().required(),
-  reference: Joi.string().trim().optional(),
-  tx_ref: Joi.string().trim().optional(),
-  transactionId: Joi.alternatives().try(Joi.string().trim(), Joi.number()).optional(),
-  transaction_id: Joi.alternatives().try(Joi.string().trim(), Joi.number()).optional(),
-}).or("reference", "tx_ref", "transactionId", "transaction_id");
-
 const validateApplyLoan = (req, res, next) => {
   const { error, value } = applyLoanSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
   if (error) {
@@ -67,15 +59,6 @@ const validateRepayInitialize = (req, res, next) => {
   next();
 };
 
-const validateRepayVerify = (req, res, next) => {
-  const { error, value } = repayVerifySchema.validate(req.body, { abortEarly: false, stripUnknown: true });
-  if (error) {
-    throw new AppError(formatValidationError(error), 400);
-  }
-  req.body = value;
-  next();
-};
-
 const cancelLoanSchema = Joi.object({
   reason: Joi.string().trim().allow("").max(500).optional(),
 });
@@ -93,7 +76,6 @@ const LoanValidate = {
   validateApplyLoan,
   validateReplaceGuarantor,
   validateRepayInitialize,
-  validateRepayVerify,
   validateCancelLoan,
 };
 

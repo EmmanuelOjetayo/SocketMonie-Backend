@@ -174,29 +174,8 @@ exports.initializeLoanRepayment = async (req, res, next) => {
   }
 };
 
-exports.verifyLoanRepayment = async (req, res, next) => {
-  try {
-    const userId = req.user._id;
-    const { loanId, reference, tx_ref, transactionId, transaction_id } = req.body;
-
-    const updatedLoan = await LoanService.verifyLoanRepayment({
-      userId,
-      loanId,
-      reference,
-      tx_ref,
-      transactionId,
-      transaction_id,
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Loan repayment verified successfully.",
-      loan: updatedLoan,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
+// Browser-triggered repayment verification was removed with the callback
+// routes. Loan repayments settle only from the signed webhook.
 
 exports.triggerLoanDefaulterCheck = async (req, res, next) => {
   try {

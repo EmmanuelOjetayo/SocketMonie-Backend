@@ -6,10 +6,7 @@ const { FinancialLedgerService } = require("./FinancialLedgerService");
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
-const { recordLoanTransaction } = require("./TransactionService");
-const LoanTransaction = require("../Models/LoanTransactionModel");
-const { sendPaymentReceiptSafe } = require("./ReceiptService");
-const { verifyPayment, verifyTransactionById, FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
+const { FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const { runLoanDefaulterEscalation } = require("../Utilis/loanDefaulterEngine");
 const AppError = require("../Utilis/AppError");
 const {
@@ -1099,7 +1096,7 @@ const initializeLoanRepayment = async ({ userId, userEmail, userName, userPhone,
   // Reference shape (restored): `LRP_<ts>_<hex>_<userId[-6]>` — underscore
   // format REQUIRED because the webhook dispatcher (processWebhook) routes
   // by `reference.startsWith("LRP_")`/`"RPL_"`. Hyphen refs (fix 2) never
-  // reached their handler. verifyLoanRepayment still accepts both shapes.
+  // reached their handler. No browser callback settles a repayment.
   const tx_ref = `LRP_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${userId
     .toString()
     .slice(-6)}`;
@@ -1150,107 +1147,6 @@ const initializeLoanRepayment = async ({ userId, userEmail, userName, userPhone,
   };
 };
 
-const verifyLoanRepayment = async ({ userId, loanId, reference, tx_ref, transactionId, transaction_id }) => {
-  const txId = transaction_id || transactionId || null;
-  const paymentRef = tx_ref || reference || null;
-  if (!loanId || (!paymentRef && !txId)) throw new AppError("loanId and reference are required.", 400);
-
-  const verification =
-    txId && /^\d+$/.test(String(txId).trim())
-      ? await verifyTransactionById(String(txId).trim())
-      : await verifyPayment(paymentRef);
-  if (!verification || verification.status !== "success") {
-    throw new AppError("Unable to verify payment.", 400);
-  }
-
-  const payment = verification.data;
-  const paymentStatus = (payment.status || "").trim().toLowerCase();
-  if (!["completed", "success", "successful"].includes(paymentStatus)) {
-    throw new AppError(`Payment not successful. Status: ${payment.status}`, 400);
-  }
-  if (String(payment.currency || "NGN").toUpperCase() !== "NGN") {
-    throw new AppError("Currency mismatch.", 400);
-  }
-
-  const paymentReference = (payment.tx_ref || payment.reference || "").trim();
-  // Accept both generations: legacy `LRP_`/`RPL_` (underscore) and the
-  // standardized `LRP-<userId>-<timestamp>` (hyphen) from fix 2. Without
-  // the hyphen family, every NEW repayment checkout would fail here.
-  if (
-    !paymentReference ||
-    !["LRP_", "RPL_", "LRP-"].some((prefix) => paymentReference.startsWith(prefix))
-  ) {
-    throw new AppError("Invalid loan repayment reference.", 400);
-  }
-
-  if (paymentRef && paymentReference !== String(paymentRef).trim()) {
-    throw new AppError("Payment reference mismatch.", 400);
-  }
-
-  // Ownership: FLW meta carries the loanId/userId bound at initialization.
-  const metaLoanId = String(payment?.meta?.loanId || payment?.metadata?.loanId || "");
-  const metaUserId = String(payment?.meta?.userId || payment?.metadata?.userId || "");
-  if (metaLoanId && metaLoanId !== String(loanId)) {
-    throw new AppError("This transaction does not belong to this loan.", 403);
-  }
-  if (metaUserId && metaUserId !== String(userId)) {
-    throw new AppError("This transaction does not belong to your account.", 403);
-  }
-
-  const loan = await LoanRepository.findOne({
-    _id: loanId,
-    userId,
-    status: { $in: ["active", "warning_30_days", "defaulted_60_days", "restricted_90_days", "recovery_120_days"] },
-  });
-  if (!loan) throw new AppError("Loan not found.", 404);
-
-  const paymentAmount = Number(payment.charged_amount ?? payment.amount_settled ?? payment.amount);
-  if (!paymentAmount || paymentAmount <= 0) throw new AppError("Invalid payment amount.", 400);
-
-  await LoanRepository.updateSavings(
-    { reference: paymentReference, type: "loan_repayment", status: "pending" },
-    { $set: { status: "completed", transactionId: String(payment.id), amount: paymentAmount } }
-  );
-
-  const updatedLoan = await processLoanRepayment({
-    loanId: loan._id,
-    transactionId: String(payment.id || paymentRef),
-    paymentAmount,
-    paymentReference,
-    paymentMethod: "flutterwave",
-    verifiedData: payment,
-  });
-
-  // Dual-write: dedicated loan transaction record (idempotent by reference).
-  await recordLoanTransaction({
-    userId,
-    loanId: loan._id,
-    type: "loan_repayment",
-    reference: paymentReference,
-    transactionId: String(payment.id || paymentRef),
-    amount: paymentAmount,
-    currency: "NGN",
-    status: "completed",
-    method: "flutterwave",
-    paidAt: new Date(),
-    metadata: { source: "verifyLoanRepayment" },
-  });
-
-  // Receipt: exactly-once email for the settled repayment (idempotent claim).
-  await sendPaymentReceiptSafe({
-    userId,
-    Model: LoanTransaction,
-    type: "loan_repayment",
-    reference: paymentReference,
-    transactionId: String(payment.id || paymentRef),
-    amount: paymentAmount,
-    currency: "NGN",
-    paidAt: new Date(),
-  });
-
-  return updatedLoan;
-};
-
 const triggerLoanDefaulterCheck = async () => {
   const result = await runLoanDefaulterEscalation();
   return result.summary;
@@ -1271,7 +1167,6 @@ const LoanService = {
   finalizeLoanDisbursement,
   finalizeManualLoanDisbursement,
   initializeLoanRepayment,
-  verifyLoanRepayment,
   processLoanRepayment,
   triggerLoanDefaulterCheck,
 };

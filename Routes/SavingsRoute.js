@@ -8,7 +8,6 @@ const {
   getSavingsHistory,
   requestWithdrawal,
   updateTierCommitment,
-  initializeMembershipFee,
 } = require("../Controllers/SavingsController");
 
 router.get("/summary", routeProtect, getSavingsSummary);
@@ -17,7 +16,6 @@ router.get("/history", routeProtect, getSavingsHistory);
 
 router.post("/withdraw-request", routeProtect, SavingsValidate.validateWithdrawRequest, requestWithdrawal);
 router.put("/tier-commitment", routeProtect, SavingsValidate.validateTierCommitment, updateTierCommitment);
-router.post("/membership-fee/initialize", routeProtect, initializeMembershipFee);
-// /membership-fee/verify was removed: browser callbacks cannot confirm a payment.
+// Membership fee checkout lives under /api/membership with its own service.
 
 module.exports = router;

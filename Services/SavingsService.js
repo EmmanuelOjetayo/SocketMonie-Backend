@@ -5,10 +5,6 @@ const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const AppError = require("../Utilis/AppError");
 const { WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
-const { MembershipService } = require("./MembershipService");
-
-// Membership checkout is owned by MembershipService and settled only by the
-// signed Flutterwave webhook. No browser callback can confirm this payment.
 
 // Available balance: completed net savings minus withdrawals already reserved
 // by pending/approved-but-unpaid requests (prevents concurrent double-spend).
@@ -306,9 +302,6 @@ const requestWithdrawal = async ({ userId, amount, accountNumber, accountName, b
   };
 };
 
-const initializeMembershipFee = async (userId) =>
-  MembershipService.initializeMembershipFee(userId);
-
 const updateTierCommitment = async ({ userId, newTier, newCommitment }) => {
   const targetTierKey = (newTier || "").toLowerCase();
   const validTiers = ["bronze", "silver", "gold", "platinum"];
@@ -355,7 +348,6 @@ const SavingsService = {
   getSavingsHistory,
   withdrawFromSavings,
   requestWithdrawal,
-  initializeMembershipFee,
   updateTierCommitment,
   updateUserTierAndScore,
 };

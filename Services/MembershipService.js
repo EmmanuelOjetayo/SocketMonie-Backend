@@ -27,8 +27,8 @@ const initializeMembershipFee = async (userId) => {
 
   // Reference shape (restored): `MEM_<ts>_<hex>_<userId[-6]>` — underscore
   // format REQUIRED because the webhook dispatcher (processWebhook) routes
-  // by `reference.startsWith("MEM_")`, and the reconciliation sweep filters
-  // `/^MEM_/`. Hyphen refs (fix 2) never reached their handler.
+  // by `reference.startsWith("MEM_")`. Hyphen refs (fix 2) never reached
+  // their handler. No polling/reconciliation path settles a payment.
   const tx_ref = `MEM_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${user._id
     .toString()
     .slice(-6)}`;

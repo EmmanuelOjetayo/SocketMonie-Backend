@@ -1,5 +1,4 @@
 const { SavingsService } = require("../Services/SavingsService");
-const { MembershipService } = require("../Services/MembershipService");
 
 const getSavingsSummary = async (req, res, next) => {
   try {
@@ -77,19 +76,6 @@ const requestWithdrawal = async (req, res, next) => {
   }
 };
 
-const initializeMembershipFee = async (req, res, next) => {
-  try {
-    const data = await MembershipService.initializeMembershipFee(req.user._id);
-    return res.status(200).json({
-      success: true,
-      message: "Membership fee payment initialized.",
-      data,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 const updateTierCommitment = async (req, res, next) => {
   try {
     const { newTier, newCommitment } = req.body;
@@ -125,6 +111,5 @@ module.exports = {
   getSavingsHistory,
   withdrawFromSavings,
   requestWithdrawal,
-  initializeMembershipFee,
   updateTierCommitment,
 };
