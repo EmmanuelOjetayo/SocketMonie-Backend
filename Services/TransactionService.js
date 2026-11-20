@@ -229,7 +229,13 @@ const normalize = (type, row) => {
     reference: row.reference || null,
     transactionId: row.transactionId || null,
     method: row.method || null,
-    date: (row.paidAt || row.createdAt || new Date()).toISOString(),
+    date: (() => {
+      // historyDisplayAt is a separate, non-audit display date (used only when
+      // explicitly set by a migration). It must not affect financial/audit logic.
+      const raw = row.historyDisplayAt || row.paidAt || row.createdAt || row.updatedAt;
+      const d = raw ? new Date(raw) : new Date();
+      return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+    })(),
     metadata: row.metadata || {},
   };
 };

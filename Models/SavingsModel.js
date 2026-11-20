@@ -74,6 +74,10 @@ const savingsSchema = new mongoose.Schema(
     completedAt: { type: Date, default: null },
     totalDeducted: { type: Number, default: null },
     payoutFailedAt: { type: Date, default: null },
+    // Separate historical display date for transaction-history views.
+    // Must not replace createdAt/paidAt audit timestamps on financial records.
+    historyDisplayAt: { type: Date, default: null },
+    historyDisplayMigration: { type: String, default: null },
   },
   { timestamps: true }
 );

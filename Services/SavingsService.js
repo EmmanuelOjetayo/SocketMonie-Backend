@@ -146,10 +146,16 @@ const getSavingsHistory = async (userId, page, limit) => {
     SavingsRepository.findForUser(userId, skip, limit),
   ]);
 
+  const toIsoDate = (value) => {
+    const d = value ? new Date(value) : new Date();
+    return Number.isNaN(d.getTime()) ? new Date().toISOString().split("T")[0] : d.toISOString().split("T")[0];
+  };
+
   return {
     history: savingsList.map((item) => ({
       id: item._id,
-      date: item.createdAt.toISOString().split("T")[0],
+      // historyDisplayAt is a separate non-audit display date for history views.
+      date: toIsoDate(item.historyDisplayAt || item.createdAt),
       amount: item.amount,
       type: item.type,
       method: item.method,

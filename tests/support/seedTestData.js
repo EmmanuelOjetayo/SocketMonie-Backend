@@ -18,6 +18,7 @@
  */
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
+const { getMongoUri, getConnectOptions, configureMongoDns } = require("../../Utilis/mongoAtlas");
 
 const FIXTURE_USER = {
   fullName: "Auth Test User",
@@ -30,10 +31,7 @@ const FIXTURE_USER = {
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1", "0.0.0.0"];
 
-const resolveMongoUrl = () =>
-  process.env.MONGO_URL ||
-  process.env.MONGODB_URI ||
-  "mongodb://127.0.0.1:27017/socketmonnie_test";
+const resolveMongoUrl = () => getMongoUri() || "mongodb://127.0.0.1:27017/socketmonnie_test";
 
 const assertWritableTarget = (uri) => {
   const isLocal = LOCAL_HOSTS.some((h) => uri.includes(h));
@@ -95,7 +93,11 @@ const seedTestUserAndClose = async () => {
     const uri = resolveMongoUrl();
     assertWritableTarget(uri);
     if (mongoose.connection.readyState !== 1) {
-      await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
+      configureMongoDns();
+      await mongoose.connect(
+        uri,
+        getConnectOptions({ serverSelectionTimeoutMS: 15000 })
+      );
     }
     const doc = await seedTestUser();
     return doc;

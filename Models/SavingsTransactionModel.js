@@ -41,6 +41,10 @@ const SavingsTransactionSchema = new mongoose.Schema(
     method: { type: String, default: "flutterwave" },
     paidAt: { type: Date, default: null },
     metadata: { type: Object, default: {} },
+    // Separate historical display date for transaction-history views.
+    // Must not replace createdAt/paidAt audit timestamps on financial records.
+    historyDisplayAt: { type: Date, default: null },
+    historyDisplayMigration: { type: String, default: null },
   },
   { timestamps: true }
 );

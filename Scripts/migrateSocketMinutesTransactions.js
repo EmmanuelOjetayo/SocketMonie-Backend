@@ -28,12 +28,13 @@ const mongoose = require("mongoose");
 const Savings = require("../Models/SavingsModel");
 const MinuteTransaction = require("../Models/MinuteTransactionModel");
 const { recordMinuteTransaction } = require("../Services/TransactionService");
+const { connectMongooseWithRetry, getMongoUri } = require("../Utilis/mongoAtlas");
 
 const APPLY = process.argv.includes("--apply");
-const MONGO_URL = process.env.MONGO_URL || process.env.DATABASE_URL || "mongodb://127.0.0.1:27017/socketmonnie";
+const MONGO_URL = getMongoUri();
 
 (async () => {
-  await mongoose.connect(MONGO_URL);
+  await connectMongooseWithRetry(mongoose, MONGO_URL, {}, { attempts: 5, delayMs: 1500 });
 
   const minutesSavings = await Savings.find({ category: "minutes_payment" }).sort({ createdAt: 1 }).lean();
   console.log(`[MIGRATE] Found ${minutesSavings.length} Savings row(s) with category "minutes_payment".`);

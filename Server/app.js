@@ -7,8 +7,8 @@ const compression = require("compression");
 const hpp = require("hpp");
 const cookieParser = require("cookie-parser");
 const mongoSanitize = require("../Middleware/mongoSanitize");
-const dns = require("dns");
-dns.setServers(['8.8.8.8', '8.8.4.4']);
+const { configureMongoDns } = require("../Utilis/mongoAtlas");
+configureMongoDns();
 
 const { globalLimiter, financialLimiter, adminLimiter } = require("../Middleware/rateLimiter");
 const db = require("../Config/db");

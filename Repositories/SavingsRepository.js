@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Savings = require("../Models/SavingsModel");
 const User = require("../Models/UserModel");
 
@@ -12,11 +13,19 @@ const SavingsRepository = {
   findCompletedForUser: (userId) =>
     Savings.find({ userId, status: "completed", ...SAVINGS_LEDGER_SCOPE }).sort({ createdAt: -1 }),
 
-  findForUser: (userId, skip, limit) =>
-    Savings.find({ userId, ...SAVINGS_LEDGER_SCOPE })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
+  findForUser: (userId, skip, limit) => {
+    const userObjectId = mongoose.Types.ObjectId.isValid(String(userId))
+      ? new mongoose.Types.ObjectId(String(userId))
+      : userId;
+    return Savings.aggregate([
+      { $match: { userId: userObjectId, ...SAVINGS_LEDGER_SCOPE } },
+      { $addFields: { _historySortDate: { $ifNull: ["$historyDisplayAt", "$createdAt"] } } },
+      { $sort: { _historySortDate: -1, _id: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $project: { _historySortDate: 0 } },
+    ]);
+  },
 
   countForUser: (userId) => Savings.countDocuments({ userId, ...SAVINGS_LEDGER_SCOPE }),
 
