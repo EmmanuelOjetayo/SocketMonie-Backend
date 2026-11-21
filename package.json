@@ -8,7 +8,9 @@
     "dev": "nodemon Server/app.js",
     "start:local": "node start-local.js",
     "test": "node --test \"tests/*.test.js\"",
-    "test:integration": "node tests/system.integration.js all"
+    "test:integration": "node tests/system.integration.js all",
+    "migrate:remove-bvn": "node Scripts/migrateRemoveBvnFields.js",
+    "migrate:remove-bvn:execute": "node Scripts/migrateRemoveBvnFields.js --execute"
   },
   "keywords": [],
   "author": "",
