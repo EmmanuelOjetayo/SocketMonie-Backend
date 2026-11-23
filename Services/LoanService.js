@@ -37,7 +37,7 @@ const getMonthlyQualificationSummary = async (userId, settings) => {
     undefined;
   return computeMonthlyQualification({
     records,
-    minimumMonthlyRequired,
+    minimumMonthlyRequired: minMonthlyRequired,
     now: new Date(),
     windowMonths: Number(settings?.eligibility?.minMonths) || 6,
   });
