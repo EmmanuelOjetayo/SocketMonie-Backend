@@ -4,7 +4,8 @@ const { getMinCommitmentForTier, getTierBySavings, canUpgradeToTier } = require(
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const AppError = require("../Utilis/AppError");
-const { WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT } = require("../Config/constants");
+const { WITHDRAWAL_FEE, GROWTH_RATE_DEFAULT, MIN_MONTHLY_SAVINGS } = require("../Config/constants");
+const { computeMonthlyQualification } = require("../Utilis/savingsQualification");
 
 // Available balance: completed net savings minus withdrawals already reserved
 // by pending/approved-but-unpaid requests (prevents concurrent double-spend).
@@ -24,7 +25,9 @@ const getAverageMonthlySavings = async (userId) => {
 
   const monthMap = {};
   deposits.forEach((d) => {
-    const key = `${d.createdAt.getFullYear()}-${d.createdAt.getMonth()}`;
+    const effectiveDate = getEffectiveSavingsDate(d);
+    if (!effectiveDate) return;
+    const key = `${effectiveDate.getFullYear()}-${effectiveDate.getMonth()}`;
     monthMap[key] = (monthMap[key] || 0) + d.amount;
   });
 
@@ -54,6 +57,38 @@ const updateUserTierAndScore = async (userId, trigger = null) => {
   if (tierChanged) await user.save();
 };
 
+const getEffectiveSavingsDate = (record) => {
+  const raw = record?.historyDisplayAt || record?.paidAt || record?.completedAt || record?.createdAt;
+  const d = raw ? new Date(raw) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+};
+
+/**
+ * Authoritative monthly qualifying savings model (single source of truth).
+ * Delegates to computeMonthlyQualification util used by loan eligibility.
+ */
+const getSavingsQualification = async (userId, options = {}) => {
+  const monthsWindow = Math.max(1, Number(options.months || 6));
+  const minimumMonthlyTarget = Math.max(0, Number(options.minimumMonthlyTarget ?? MIN_MONTHLY_SAVINGS));
+  const savingsList = options.savingsList || await SavingsRepository.findCompletedForUser(userId);
+
+  const result = computeMonthlyQualification({
+    records: savingsList,
+    minimumMonthlyRequired: minimumMonthlyTarget,
+    now: options.now || new Date(),
+    windowMonths: monthsWindow,
+  });
+
+  return {
+    minimumMonthlyTarget: result.minimumMonthlyRequired,
+    monthsWindow: result.windowMonths,
+    qualifyingMonths: result.qualifyingMonths,
+    streakMonths: result.qualifyingMonths,
+    isStreakComplete: result.isConsistent,
+    months: result.months,
+  };
+};
+
 const getMonthlySavingsReport = async (userId) => {
   const savingsList = await SavingsRepository.findCompletedForUser(userId);
   const now = new Date();
@@ -65,7 +100,9 @@ const getMonthlySavingsReport = async (userId) => {
   }
 
   savingsList.forEach((item) => {
-    const month = monthNames[new Date(item.createdAt).getMonth()];
+    const effectiveDate = getEffectiveSavingsDate(item);
+    if (!effectiveDate) return;
+    const month = monthNames[effectiveDate.getMonth()];
     if (reportMap[month] !== undefined) reportMap[month] += item.amount;
   });
 
@@ -111,7 +148,11 @@ const getSavingsSummary = async (userId) => {
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
   const monthlyContributed = savingsList
-    .filter((item) => item.type === "deposit" && new Date(item.createdAt) >= startOfMonth)
+    .filter((item) => {
+      if (item.type !== "deposit") return false;
+      const effectiveDate = getEffectiveSavingsDate(item);
+      return effectiveDate ? effectiveDate >= startOfMonth : false;
+    })
     .reduce((total, item) => total + item.amount, 0);
 
   const user = await SavingsRepository.findUserSummary(userId);
@@ -126,6 +167,12 @@ const getSavingsSummary = async (userId) => {
   const reservedBalance = await SavingsRepository.getPendingWithdrawalDeductions(userId);
   const availableBalance = Math.max(0, Number(totalSaved) - Number(reservedBalance));
 
+  const qualification = await getSavingsQualification(userId, {
+    months: 6,
+    minimumMonthlyTarget: MIN_MONTHLY_SAVINGS,
+    savingsList,
+  });
+
   return {
     totalSaved,
     availableBalance,
@@ -136,6 +183,11 @@ const getSavingsSummary = async (userId) => {
     monthCompletion: Math.min(100, Math.round((monthlyContributed / monthlyTarget) * 100)),
     isTierTargetMet: monthlyContributed >= monthlyTarget,
     growthRatePct,
+    // Authoritative savings streak / qualifying-month data (backward compatible additions)
+    streakMonths: qualification.streakMonths,
+    qualifyingMonths: qualification.qualifyingMonths,
+    minimumMonthlyTarget: qualification.minimumMonthlyTarget,
+    savingsQualification: qualification,
   };
 };
 
@@ -352,6 +404,7 @@ const SavingsService = {
   getSavingsSummary,
   getMonthlySavingsReport,
   getSavingsHistory,
+  getSavingsQualification,
   withdrawFromSavings,
   requestWithdrawal,
   updateTierCommitment,
