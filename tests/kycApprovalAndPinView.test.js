@@ -134,3 +134,19 @@ test("KYC routes enforce authentication, PIN validation and a rate limit", () =>
   const adminController = read("Controllers/AdminController.js");
   assert.ok(adminController.includes("data: { kyc }"));
 });
+
+test("user router actually registers POST /kyc/view with callable handlers", () => {
+  // Source-text checks are not enough: a missing controller export used to
+  // make UserRoutes throw at load time, leaving the running server on an old
+  // router where /kyc/view genuinely did not exist.
+  const router = require("../Routes/UserRoutes");
+  const layer = router.stack.find(
+    (entry) => entry.route?.path === "/kyc/view" && entry.route.methods.post
+  );
+
+  assert.ok(layer, "POST /api/user/kyc/view is not registered");
+  assert.equal(layer.route.stack.length, 4, "auth, PIN validation, limiter and controller expected");
+  for (const handler of layer.route.stack) {
+    assert.equal(typeof handler.handle, "function", "every KYC view handler must be callable");
+  }
+});

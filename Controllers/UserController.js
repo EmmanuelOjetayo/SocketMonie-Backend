@@ -271,4 +271,4 @@ const UpdatePersonalInfo = async (req, res) => {
 };
 
 
-module.exports = { GetUserInfo, KYCUpload, SetPin, ChangePin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms, UploadProfilePicture, DeleteProfilePicture };
+module.exports = { GetUserInfo, KYCUpload, ViewKycDetails, SetPin, ChangePin, updateBankDetails, forgotPin, resetPin, UpdatePersonalInfo, updateProfile, GetUserDraft, SaveUserDraft, DeleteUserDraft, AcceptTerms, UploadProfilePicture, DeleteProfilePicture };
