@@ -8,6 +8,7 @@ const { FinancialLedgerService } = require("./FinancialLedgerService");
 const { ReferralService } = require("./ReferralService");
 const { logAudit } = require("../Utilis/auditLogger");
 const AppError = require("../Utilis/AppError");
+const { buildKycStatusUpdate } = require("../Utilis/kycStatus");
 const { LOAN_TIERS } = require("../Config/constants");
 
 const defaultSettings = {
@@ -128,15 +129,17 @@ const updateKyc = async (userId, status, reason = "", adminUser = {}, clientIp =
   const user = await AdminRepository.findUserDocument(userId);
   if (!user) throw new AppError("User not found.", 404);
 
-  user.kycStatus = status;
+  // There is no separate KYC collection: the member's User document is the
+  // single source of truth. buildKycStatusUpdate also refuses to approve an
+  // account with no submission. Persist the full lifecycle state in one write
+  // so /me, the admin list and the member UI cannot disagree about approval.
+  Object.assign(user, buildKycStatusUpdate(status, reason, user));
+  await user.save();
+
   if (status === "approved") {
-    user.kycVerifiedAt = new Date();
-    await user.save();
     await updateUserScore(userId, "kyc_approved");
     // Workflow K: an approved KYC may qualify a pending referral (idempotent).
-    if (user.kycStatus === "approved") {
-      await ReferralService.processQualification(userId, "kyc_approved");
-    }
+    await ReferralService.processQualification(userId, "kyc_approved");
     await createNotification({
       userId,
       type: "system",
@@ -157,8 +160,6 @@ const updateKyc = async (userId, status, reason = "", adminUser = {}, clientIp =
       });
     }
   } else {
-    user.kycRejectionReason = reason;
-    await user.save();
     await createNotification({
       userId,
       type: "system",
@@ -179,7 +180,14 @@ const updateKyc = async (userId, status, reason = "", adminUser = {}, clientIp =
       });
     }
   }
-  return user;
+
+  // Return only KYC lifecycle fields — callers must not receive the whole
+  // member document (which contains identity and financial data).
+  return {
+    kycStatus: user.kycStatus,
+    kycVerifiedAt: user.kycVerifiedAt,
+    kycRejectionReason: user.kycRejectionReason,
+  };
 };
 
 const getLoans = async ({ status, page, limit, search }) => {

@@ -97,6 +97,25 @@ const KYCUpload = async (req, res) => {
   }
 };
 
+// PIN-protected KYC read: req.user comes from routeProtect and is the only
+// identity used by the service, so request parameters cannot select a record.
+const ViewKycDetails = async (req, res) => {
+  try {
+    const response = await UserService.ViewKycService(req.body?.pin, req.user._id);
+    return res.status(200).json({
+      success: true,
+      message: 'Transaction PIN verified.',
+      data: { kyc: response },
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : 'Failed to load KYC details',
+      error: err.statusCode ? undefined : err.message,
+    });
+  }
+};
+
 const UploadProfilePicture = async (req, res) => {
   try {
     const response = await UserService.UploadProfilePictureService(req.file, req.user._id);

@@ -11,6 +11,8 @@
  * update endpoints.
  */
 
+const AppError = require("./AppError");
+
 const KYC_LOCKED_STATUS = "approved";
 
 const KYC_LOCKED_MESSAGE =
@@ -18,4 +20,29 @@ const KYC_LOCKED_MESSAGE =
 
 const isKycLocked = (kycStatus) => kycStatus === KYC_LOCKED_STATUS;
 
-module.exports = { KYC_LOCKED_STATUS, KYC_LOCKED_MESSAGE, isKycLocked };
+/**
+ * Build the complete KYC lifecycle update for a member document.
+ *
+ * There is no separate KYC collection — the member document is the source of
+ * truth. Keeping the transition here makes it possible to test approval and
+ * rejection without loading Mongoose/services, while AdminService still
+ * persists the fields in a single document write.
+ */
+const buildKycStatusUpdate = (status, reason = "", user = {}) => {
+  if (status === KYC_LOCKED_STATUS && !user.documentUrl) {
+    throw new AppError("No KYC document has been submitted for this member yet.", 400);
+  }
+
+  return {
+    kycStatus: status,
+    kycVerifiedAt: status === KYC_LOCKED_STATUS ? new Date() : null,
+    kycRejectionReason: status === "rejected" ? reason : null,
+  };
+};
+
+module.exports = {
+  KYC_LOCKED_STATUS,
+  KYC_LOCKED_MESSAGE,
+  isKycLocked,
+  buildKycStatusUpdate,
+};

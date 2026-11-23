@@ -7,8 +7,8 @@ const { logAudit } = require("../Utilis/auditLogger")
 const forgotPasswordTemplate = require("../Utilis/emailTemplates/forgotPassword"); 
 const { cloudinary } = require("../Config/cloudinary");
 const { isKycLocked, KYC_LOCKED_MESSAGE } = require("../Utilis/kycStatus");
-
-const maskId = (value) => (value ? `********${String(value).slice(-4)}` : null);
+const { toSafeUserPayload } = require("../Utilis/userPayload");
+const { verifyTransactionPin } = require("../Utilis/pinVerification");
 
 // Transaction PIN recovery security policy (owner-approved):
 // - OTP validity window for PIN reset requests.
@@ -18,18 +18,13 @@ const PIN_RESET_OTP_TTL_MS = 5 * 60 * 1000;
 const PIN_RESET_MAX_ATTEMPTS = Number(process.env.PIN_RESET_MAX_ATTEMPTS) || 5;
 const PIN_RESET_LOCK_MS = Number(process.env.PIN_RESET_LOCK_MS) || 15 * 60 * 1000;
 const UserInfo = async(id)=>{
- 
     const userData = await UserRepository.findUserDetails(id)
     if (!userData) return null
 
-
-    userData.nin = maskId(userData.nin);
-    // Canonical API field for TopHeader/Profile — never expose Cloudinary secrets.
-    userData.avatarUrl = userData.avatarUrl || userData.selfieUrl || null;
-    userData.selfieUrl = userData.selfieUrl || userData.avatarUrl || null;
-
-    return userData
-
+    // Single sanitization boundary for /me (and any other user-state response):
+    // KYC documents and identity numbers are withheld until the member passes
+    // the PIN-protected view flow. `kycSubmitted` keeps status UI functional.
+    return toSafeUserPayload(userData)
 }
 
 /**
@@ -176,13 +171,41 @@ const KYCUploadService = async (reqBody, file, reqUserID) => {
   }
   if (!updatedUser) throw new AppError('User account not found', 404);
 
+    // The member already supplied these values; do not echo the NIN or the
+    // Cloudinary URL back into frontend state. The PIN-protected view route is
+    // the only endpoint that returns the stored KYC details.
     return {
-        documentType: updatedUser.documentType, 
-        documentUrl: updatedUser.documentUrl, 
         kycStatus: updatedUser.kycStatus,
-        nin: updatedUser.nin ? `********${String(updatedUser.nin).slice(-4)}` : null
+        kycSubmitted: Boolean(updatedUser.documentUrl),
     }
 
+}
+
+/**
+ * PIN-protected KYC read.
+ *
+ * The transaction PIN hash is fetched through the internal-only repository
+ * method and verified with bcrypt BEFORE any KYC document is loaded. Only an
+ * explicit allowlist of fields is returned, so PIN/OTP/password hashes and
+ * other users' records can never leak through this endpoint.
+ */
+const ViewKycService = async (pin, reqUserID) => {
+    const pinRecord = await UserRepository.findUserByIdForPin(reqUserID);
+    await verifyTransactionPin(pin, pinRecord);
+
+    // Reached only after the backend has verified the member's own PIN.
+    const user = await UserRepository.findUserDetails(reqUserID, { includeSensitive: true });
+    if (!user) throw new AppError('User account not found', 404);
+
+    return {
+        nin: user.nin || null,
+        documentType: user.documentType || null,
+        documentUrl: user.documentUrl || null,
+        kycStatus: user.kycStatus || 'unverified',
+        kycUploadedAt: user.kycUploadedAt || null,
+        kycVerifiedAt: user.kycVerifiedAt || null,
+        kycRejectionReason: user.kycRejectionReason || null,
+    };
 }
 
 const SetPinService = async (reqBody, reqUserID) => {
@@ -497,7 +520,7 @@ const AcceptTermsService = async (reqUserID, termsAccepted, privacyAccepted) => 
 }
 
 const UserService = {
-    UserInfo, KYCUploadService, SetPinService, BankDetailService,
+    UserInfo, KYCUploadService, ViewKycService, SetPinService, BankDetailService,
     UploadProfilePictureService,
     DeleteProfilePictureService,
     ForgotPin, ResetPin, ChangePinService, UpdateProfile, UpdatePersonalInfo, AcceptTermsService

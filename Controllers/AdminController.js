@@ -64,8 +64,8 @@ exports.activateMember = async (req, res, next) => {
 exports.approveKYC = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    await AdminService.updateKyc(userId, "approved", "", req.user, req.ip, req.headers["user-agent"]);
-    return res.status(200).json({ success: true, message: "KYC approved." });
+    const kyc = await AdminService.updateKyc(userId, "approved", "", req.user, req.ip, req.headers["user-agent"]);
+    return res.status(200).json({ success: true, message: "KYC approved.", data: { kyc } });
   } catch (err) {
     next(err);
   }
@@ -75,8 +75,8 @@ exports.rejectKYC = async (req, res, next) => {
   try {
     const { userId } = req.params;
     const { reason } = req.body;
-    await AdminService.updateKyc(userId, "rejected", reason, req.user, req.ip, req.headers["user-agent"]);
-    return res.status(200).json({ success: true, message: "KYC rejected." });
+    const kyc = await AdminService.updateKyc(userId, "rejected", reason, req.user, req.ip, req.headers["user-agent"]);
+    return res.status(200).json({ success: true, message: "KYC rejected.", data: { kyc } });
   } catch (err) {
     next(err);
   }

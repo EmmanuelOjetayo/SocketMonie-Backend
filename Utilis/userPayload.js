@@ -14,12 +14,20 @@ const SENSITIVE_KEYS = [
   "transactionPin",
   "pinResetOTP",
   "pinResetOTPExpiresAt",
+  // KYC details are only returned by the PIN-protected /user/kyc/view route.
+  "nin",
+  "documentUrl",
+  "documentType",
 ];
 
 const toSafeUserPayload = (raw) => {
   if (!raw || typeof raw !== "object") return null;
   const obj = typeof raw.toObject === "function" ? raw.toObject() : { ...raw };
+  // Non-sensitive lifecycle flag: the client needs to know a document exists
+  // without receiving the document itself or the identity number.
+  const kycSubmitted = Boolean(obj.documentUrl);
   for (const key of SENSITIVE_KEYS) delete obj[key];
+  obj.kycSubmitted = kycSubmitted;
   obj.avatarUrl = obj.avatarUrl || obj.selfieUrl || null;
   obj.selfieUrl = obj.selfieUrl || obj.avatarUrl || null;
   return obj;

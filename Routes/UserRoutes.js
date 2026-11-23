@@ -5,6 +5,7 @@ const { financialLimiter } = require("../Middleware/rateLimiter");
 const {
   GetUserInfo,
   KYCUpload,
+  ViewKycDetails,
   SetPin,
   ChangePin,
   updateBankDetails,
@@ -25,6 +26,9 @@ const UserRoutes = express.Router();
 UserRoutes.get('/me', routeProtect, GetUserInfo);
 UserRoutes.patch("/personal-info", routeProtect, UserValidator.UpdatePersonalInfoValidate, UpdatePersonalInfo);
 UserRoutes.post('/kyc', routeProtect, upload.single('file'), UserValidator.KYCUploadValidate, KYCUpload);
+// Sensitive KYC read. Authentication + PIN verification + financial rate limit
+// are all enforced here; the handler never accepts a target user parameter.
+UserRoutes.post('/kyc/view', routeProtect, UserValidator.VerifyPinValidate, financialLimiter, ViewKycDetails);
 UserRoutes.post('/profile-picture', routeProtect, avatarUpload.single('file'), UploadProfilePicture);
 UserRoutes.delete('/profile-picture', routeProtect, DeleteProfilePicture);
 UserRoutes.post('/pin', routeProtect, UserValidator.SetPinValidate, financialLimiter, SetPin);

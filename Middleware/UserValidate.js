@@ -35,6 +35,18 @@ const SetPinValidate = (req, res, next) => {
 
 }
 
+// Verify an existing Transaction PIN before a sensitive read (e.g. KYC view).
+// Uses the same 4-digit PIN contract as SetPin — never a password or OTP.
+const VerifyPinValidate = (req, res, next) => {
+    const { error, value } = pinSchema.validate(req.body);
+    if (error) {
+      throw new AppError(formatValidationError(error), 400);
+    }
+
+    req.body = value;
+    next();
+}
+
 const bankDetailsSchema = joi.object({
   bankName: joi.string().required(),
   bankCode: joi.string().required(),
@@ -130,6 +142,7 @@ const UpdatePersonalInfoValidate = (req, res, next) => {
 
 const UserValidator = {
     KYCUploadValidate,
+    VerifyPinValidate,
     SetPinValidate,
     BankDetailsValidate,
     ResetPinValidate,
