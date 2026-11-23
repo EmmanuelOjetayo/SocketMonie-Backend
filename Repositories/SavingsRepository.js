@@ -69,7 +69,7 @@ const SavingsRepository = {
       type: "deposit",
       category: { $ne: "minutes_payment" },
       status: "completed",
-      createdAt: { $gte: sinceDate },
+      $expr: { $gte: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, sinceDate] },
     }),
 
   findAdminsForNotification: () =>

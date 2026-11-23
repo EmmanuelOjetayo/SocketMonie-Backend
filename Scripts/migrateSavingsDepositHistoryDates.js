@@ -1,17 +1,25 @@
 /**
- * Safe migration: set a separate historical display date for successful savings
- * deposit records so transaction history can reflect a six-month period
- * (2026-05-20 through 2026-11-20) without falsifying financial audit timestamps.
+ * Safe migration: correct SavingsTransaction.createdAt (and set historyDisplayAt)
+ * for successful savings deposit records, using a dynamic rolling six-month period
+ * calculated from the current month (current month + previous 5 months = 6 calendar
+ * months total).
  *
  * IMPORTANT:
- * - Does NOT modify createdAt/updatedAt/paidAt/amount/reference/status/user/type/category.
+ * - Updates SavingsTransaction.createdAt and historyDisplayAt for eligible records
+ *   (explicitly requested). Also updates matching Savings.historyDisplayAt for
+ *   reference-linked twins. Does NOT modify paidAt/amount/reference/status/user/
+ *   type/category, and does NOT modify Savings.createdAt unless explicitly required.
  * - Does NOT touch SocketMinutes, membership, loan, withdrawal, failed, pending,
  *   abandoned, or any non-savings-deposit records.
  * - Targets only successful savings deposits:
  *     Savings:            type="deposit", status="completed", category != "minutes_payment"
- *     SavingsTransaction: type="deposit", status="completed" with reference matching
- *                         a targeted Savings deposit (corresponding twin record).
+ *     SavingsTransaction: type="deposit", status="completed" (savings deposit twins;
+ *                         matched by reference to targeted Savings where possible).
+ * - Rolling 6-month window is dynamic from runtime current date:
+ *     e.g. Nov 2026 => [Nov 2026, Oct 2026, Sep 2026, Aug 2026, Jul 2026, Jun 2026]
+ *   Year boundaries are handled (e.g. Feb 2026 includes Dec/Nov/Oct/Sep 2025).
  * - Idempotent: records already tagged with this migration key are skipped.
+ * - Avoids duplicates: updates existing records only (no record creation).
  * - Dry-run by default. Requires --execute to write. Creates a backup export
  *   before applying changes. Supports rollback from that backup.
  *
@@ -35,9 +43,9 @@ const Savings = require("../Models/SavingsModel");
 const SavingsTransaction = require("../Models/SavingsTransactionModel");
 const { connectMongooseWithRetry, getMongoUri } = require("../Utilis/mongoAtlas");
 
-const MIGRATION_KEY = "savings_deposit_history_display_v1";
-const RANGE_START = new Date("2026-05-20T00:00:00.000Z");
-const RANGE_END = new Date("2026-11-20T23:59:59.999Z");
+const MIGRATION_KEY = "savings_deposit_history_display_v4_createdAt_6m";
+// Rolling window: current month + previous 5 months = 6 calendar months total.
+const WINDOW_MONTHS = 6;
 
 const argv = process.argv.slice(2);
 const EXECUTE = argv.includes("--execute");
@@ -55,12 +63,67 @@ function toIso(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function distributeDate(index, total) {
-  const start = RANGE_START.getTime();
-  const end = RANGE_END.getTime();
-  if (total <= 1) return new Date(Math.floor((start + end) / 2));
-  const ratio = index / (total - 1);
-  return new Date(Math.floor(start + ratio * (end - start)));
+function getEffectivePaymentDate(doc) {
+  const raw = doc?.paidAt || doc?.completedAt || doc?.createdAt || doc?.updatedAt;
+  const d = raw ? new Date(raw) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+}
+
+function daysInUtcMonth(year, monthIndex) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+/**
+ * Subtract N calendar months from a date, preserving day-of-month where possible.
+ * If the target month is shorter, clamp to the target month's last day.
+ * Preserves the original UTC time components.
+ */
+function subtractMonthsPreserveDay(date, monthsBack) {
+  const base = new Date(date);
+  if (Number.isNaN(base.getTime())) return new Date(NaN);
+
+  const year = base.getUTCFullYear();
+  const month = base.getUTCMonth();
+  const day = base.getUTCDate();
+  const hours = base.getUTCHours();
+  const minutes = base.getUTCMinutes();
+  const seconds = base.getUTCSeconds();
+  const ms = base.getUTCMilliseconds();
+
+  const totalMonths = year * 12 + month - monthsBack;
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonth = ((totalMonths % 12) + 12) % 12;
+  const clampedDay = Math.min(day, daysInUtcMonth(targetYear, targetMonth));
+
+  return new Date(Date.UTC(targetYear, targetMonth, clampedDay, hours, minutes, seconds, ms));
+}
+
+/**
+ * Compute a dynamic rolling 6-calendar-month window from the current date.
+ * Includes the current month and the previous 5 months (6 total).
+ * Example: current Nov 2026 => [Nov 2026, Oct 2026, Sep 2026, Aug 2026, Jul 2026, Jun 2026]
+ * Year boundaries are handled by calendar-month subtraction.
+ */
+function getRollingSixMonthWindow(now = new Date()) {
+  const reference = new Date(now);
+  if (Number.isNaN(reference.getTime())) throw new Error("Invalid current date for migration window");
+
+  const dates = [];
+  for (let i = 0; i < WINDOW_MONTHS; i += 1) {
+    dates.push(subtractMonthsPreserveDay(reference, i));
+  }
+  return {
+    referenceDate: reference,
+    months: dates, // descending: current month first, then previous 5
+  };
+}
+
+/**
+ * Backward-compatible name used by older tests/callers; now returns the
+ * current-month rolling 6-month window.
+ */
+function generateSixMonthlyDates(referenceDate = new Date()) {
+  return getRollingSixMonthWindow(referenceDate).months;
 }
 
 function savingsTargetFilter(includeMigrated = false) {
@@ -119,44 +182,44 @@ function serializeSavingsTxRecord(doc) {
   };
 }
 
-async function inspect() {
-  const totalUsersInspected = await User.countDocuments({});
-  const allSuccessfulSavingsDeposits = await Savings.find(savingsTargetFilter(true))
-    .sort({ userId: 1, createdAt: 1, _id: 1 })
-    .lean();
-  const pendingSavingsDeposits = await Savings.find(savingsTargetFilter(false))
-    .sort({ userId: 1, createdAt: 1, _id: 1 })
-    .lean();
+function buildRollingPlan(allEligibleDeposits, pendingDeposits, now = new Date()) {
+  const window = getRollingSixMonthWindow(now);
+  const windowMonths = window.months;
 
-  const pendingReferences = pendingSavingsDeposits
-    .map((d) => d.reference)
-    .filter((r) => typeof r === "string" && r.length > 0);
-
-  const pendingSavingsTx = pendingReferences.length
-    ? await SavingsTransaction.find({
-        type: "deposit",
-        status: "completed",
-        reference: { $in: pendingReferences },
-        $or: [
-          { historyDisplayMigration: { $exists: false } },
-          { historyDisplayMigration: null },
-          { historyDisplayMigration: { $ne: MIGRATION_KEY } },
-        ],
-      })
-        .sort({ createdAt: 1, _id: 1 })
-        .lean()
-    : [];
-
-  // Map reference -> proposed date from Savings plan (corresponding records must align)
-  const proposedByReference = new Map();
-  pendingSavingsDeposits.forEach((doc, index) => {
-    const proposed = distributeDate(index, pendingSavingsDeposits.length);
-    if (doc.reference) proposedByReference.set(doc.reference, proposed);
+  const allSortedDesc = allEligibleDeposits.slice().sort((a, b) => {
+    const da = getEffectivePaymentDate(a)?.getTime() || 0;
+    const db = getEffectivePaymentDate(b)?.getTime() || 0;
+    if (db !== da) return db - da;
+    return String(b._id).localeCompare(String(a._id));
+  });
+  const pendingSortedDesc = pendingDeposits.slice().sort((a, b) => {
+    const da = getEffectivePaymentDate(a)?.getTime() || 0;
+    const db = getEffectivePaymentDate(b)?.getTime() || 0;
+    if (db !== da) return db - da;
+    return String(b._id).localeCompare(String(a._id));
   });
 
-  const savingsPlan = pendingSavingsDeposits.map((doc, index) => {
-    const proposed = distributeDate(index, pendingSavingsDeposits.length);
-    return {
+  const plannedSavings = [];
+  const proposedByReference = new Map();
+  const perUserMap = new Map();
+
+  for (let i = 0; i < pendingSortedDesc.length; i += 1) {
+    const doc = pendingSortedDesc[i];
+    // Distribute across the 6-month window (current month first), preserving
+    // the record's own time-of-day where possible.
+    const windowAnchor = windowMonths[i % windowMonths.length];
+    const proposed = subtractMonthsPreserveDay(windowAnchor, 0);
+    const effective = getEffectivePaymentDate(doc) || window.referenceDate;
+    proposed.setUTCHours(
+      effective.getUTCHours(),
+      effective.getUTCMinutes(),
+      effective.getUTCSeconds(),
+      effective.getUTCMilliseconds()
+    );
+
+    if (doc.reference) proposedByReference.set(doc.reference, proposed);
+
+    const planItem = {
       collection: "Savings",
       _id: String(doc._id),
       userId: doc.userId ? String(doc.userId) : null,
@@ -166,15 +229,114 @@ async function inspect() {
       type: doc.type,
       category: doc.category ?? null,
       currentCreatedAt: toIso(doc.createdAt),
+      currentPaidAt: toIso(doc.paidAt || doc.completedAt || null),
       currentHistoryDisplayAt: toIso(doc.historyDisplayAt),
       proposedHistoryDisplayAt: toIso(proposed),
+      targetWindowMonth: toIso(windowAnchor).slice(0, 7),
     };
-  });
+    plannedSavings.push(planItem);
 
-  const savingsTxPlan = pendingSavingsTx.map((doc) => {
-    const proposed =
-      (doc.reference && proposedByReference.get(doc.reference)) ||
-      distributeDate(0, 1);
+    const uid = planItem.userId || "unknown";
+    if (!perUserMap.has(uid)) {
+      perUserMap.set(uid, {
+        userId: uid,
+        eligibleDepositCount: 0,
+        pendingDepositCount: 0,
+        assignedCount: 0,
+        assignments: [],
+      });
+    }
+    perUserMap.get(uid).pendingDepositCount += 1;
+    perUserMap.get(uid).assignedCount += 1;
+    perUserMap.get(uid).assignments.push(planItem);
+  }
+
+  for (const doc of allSortedDesc) {
+    const uid = doc.userId ? String(doc.userId) : "unknown";
+    if (!perUserMap.has(uid)) {
+      perUserMap.set(uid, {
+        userId: uid,
+        eligibleDepositCount: 0,
+        pendingDepositCount: 0,
+        assignedCount: 0,
+        assignments: [],
+      });
+    }
+    perUserMap.get(uid).eligibleDepositCount += 1;
+  }
+
+  const perUser = Array.from(perUserMap.values()).sort((a, b) => String(a.userId).localeCompare(String(b.userId)));
+  return {
+    windowReferenceDate: window.referenceDate,
+    windowMonths: windowMonths.map(toIso),
+    windowMonthLabels: windowMonths.map((d) => toIso(d).slice(0, 7)),
+    perUser,
+    proposedByReference,
+    plannedSavings,
+  };
+}
+
+async function inspect(now = new Date()) {
+  const totalUsersInspected = await User.countDocuments({});
+  const allSuccessfulSavingsDeposits = await Savings.find(savingsTargetFilter(true))
+    .sort({ createdAt: -1, _id: -1 })
+    .lean();
+  const pendingSavingsDeposits = await Savings.find(savingsTargetFilter(false))
+    .sort({ createdAt: -1, _id: -1 })
+    .lean();
+
+  const {
+    windowReferenceDate,
+    windowMonths,
+    windowMonthLabels,
+    perUser,
+    proposedByReference,
+    plannedSavings,
+  } = buildRollingPlan(allSuccessfulSavingsDeposits, pendingSavingsDeposits, now);
+
+  // SavingsTransaction: update completed deposit twins linked to eligible Savings
+  // deposit references (safe linkage) and also any other pending completed deposit
+  // SavingsTransaction records that are not already migrated. We keep the reference
+  // linkage as primary to avoid touching non-savings categories.
+  const eligibleSavingsRefs = allSuccessfulSavingsDeposits
+    .map((d) => d.reference)
+    .filter((r) => typeof r === "string" && r.length > 0);
+
+  const pendingSavingsTx = await SavingsTransaction.find({
+    type: "deposit",
+    status: "completed",
+    $and: [
+      {
+        $or: [
+          { historyDisplayMigration: { $exists: false } },
+          { historyDisplayMigration: null },
+          { historyDisplayMigration: { $ne: MIGRATION_KEY } },
+        ],
+      },
+      eligibleSavingsRefs.length
+        ? { reference: { $in: eligibleSavingsRefs } }
+        : { _id: null },
+    ],
+  })
+    .sort({ createdAt: -1, _id: -1 })
+    .lean();
+
+  // Fallback: if there are pending savings transactions with no matching Savings
+  // reference in the eligible set (legacy/orphan twin), still plan them by window.
+  const plannedSavingsRefs = new Set(plannedSavings.map((p) => p.reference).filter(Boolean));
+  const savingsTxPlan = pendingSavingsTx.map((doc, idx) => {
+    let proposed = doc.reference ? proposedByReference.get(doc.reference) : null;
+    if (!proposed) {
+      const anchor = windowMonths[idx % windowMonths.length];
+      proposed = subtractMonthsPreserveDay(new Date(anchor), 0);
+      const effective = getEffectivePaymentDate(doc) || windowReferenceDate;
+      proposed.setUTCHours(
+        effective.getUTCHours(),
+        effective.getUTCMinutes(),
+        effective.getUTCSeconds(),
+        effective.getUTCMilliseconds()
+      );
+    }
     return {
       collection: "SavingsTransaction",
       _id: String(doc._id),
@@ -186,29 +348,41 @@ async function inspect() {
       currentCreatedAt: toIso(doc.createdAt),
       currentPaidAt: toIso(doc.paidAt),
       currentHistoryDisplayAt: toIso(doc.historyDisplayAt),
+      proposedCreatedAt: toIso(proposed),
       proposedHistoryDisplayAt: toIso(proposed),
+      targetWindowMonth: toIso(proposed).slice(0, 7),
+      linkedToPlannedSavings: doc.reference ? plannedSavingsRefs.has(doc.reference) : false,
     };
   });
 
-  const affectedUserIds = new Set(
-    pendingSavingsDeposits.map((d) => (d.userId ? String(d.userId) : null)).filter(Boolean)
-  );
+  const plannedSavingsIds = new Set(plannedSavings.map((p) => p._id));
+  const plannedPendingSavingsDeposits = pendingSavingsDeposits.filter((d) => plannedSavingsIds.has(String(d._id)));
+  const affectedUserIds = new Set([
+    ...plannedSavings.map((p) => p.userId).filter(Boolean),
+    ...savingsTxPlan.map((p) => p.userId).filter(Boolean),
+  ]);
+  const allEligibleUserIds = new Set(allSuccessfulSavingsDeposits.map((d) => (d.userId ? String(d.userId) : null)).filter(Boolean));
 
   return {
     migrationKey: MIGRATION_KEY,
-    rangeStart: toIso(RANGE_START),
-    rangeEnd: toIso(RANGE_END),
+    windowMonths: WINDOW_MONTHS,
+    windowReferenceDate: toIso(windowReferenceDate),
+    rollingWindowMonths: windowMonthLabels,
+    rollingWindowDates: windowMonths.map(toIso),
     totalUsersInspected,
+    eligibleUsersWithSuccessfulSavingsDeposits: allEligibleUserIds.size,
     usersWithPendingSavingsDeposits: affectedUserIds.size,
     successfulSavingsDepositsFound: allSuccessfulSavingsDeposits.length,
-    successfulSavingsDepositsAlreadyMigrated:
-      allSuccessfulSavingsDeposits.length - pendingSavingsDeposits.length,
+    successfulSavingsDepositsAlreadyMigrated: Math.max(0, allSuccessfulSavingsDeposits.length - pendingSavingsDeposits.length),
     pendingSavingsDepositRecords: pendingSavingsDeposits.length,
+    plannedSavingsDepositRecords: plannedSavings.length,
     pendingSavingsTransactionRecords: pendingSavingsTx.length,
-    recordsThatWouldBeUpdated: pendingSavingsDeposits.length + pendingSavingsTx.length,
-    pendingSavingsDeposits,
+    plannedSavingsTransactionRecords: savingsTxPlan.length,
+    recordsThatWouldBeUpdated: plannedSavings.length + savingsTxPlan.length,
+    perUserPlan: perUser,
+    pendingSavingsDeposits: plannedPendingSavingsDeposits,
     pendingSavingsTx,
-    savingsPlan,
+    savingsPlan: plannedSavings,
     savingsTxPlan,
   };
 }
@@ -219,9 +393,10 @@ function buildBackupPayload(inspection) {
   return {
     meta: {
       migrationKey: MIGRATION_KEY,
+      windowMonths: WINDOW_MONTHS,
+      windowReferenceDate: inspection.windowReferenceDate || null,
+      rollingWindowMonths: inspection.rollingWindowMonths || [],
       createdAt: new Date().toISOString(),
-      rangeStart: toIso(RANGE_START),
-      rangeEnd: toIso(RANGE_END),
       mode: "pre-execute-backup",
       counts: {
         savings: savingsRecords.length,
@@ -250,28 +425,39 @@ async function executeMigration(inspection) {
   let updatedSavings = 0;
   let updatedSavingsTransactions = 0;
 
-  for (let i = 0; i < inspection.pendingSavingsDeposits.length; i += 1) {
-    const doc = inspection.pendingSavingsDeposits[i];
-    const proposed = distributeDate(i, inspection.pendingSavingsDeposits.length);
+  const proposedByReference = new Map();
+  for (const plan of inspection.savingsPlan || []) {
+    if (plan.reference && plan.proposedHistoryDisplayAt) {
+      proposedByReference.set(plan.reference, new Date(plan.proposedHistoryDisplayAt));
+    }
+    if (!plan.proposedHistoryDisplayAt) continue;
     const res = await Savings.updateOne(
-      { _id: doc._id, historyDisplayMigration: { $ne: MIGRATION_KEY } },
-      { $set: { historyDisplayAt: proposed, historyDisplayMigration: MIGRATION_KEY } },
+      { _id: plan._id, historyDisplayMigration: { $ne: MIGRATION_KEY } },
+      { $set: { historyDisplayAt: new Date(plan.proposedHistoryDisplayAt), historyDisplayMigration: MIGRATION_KEY } },
       { timestamps: false }
     );
     updatedSavings += res.modifiedCount || 0;
   }
 
-  const proposedByReference = new Map();
-  inspection.pendingSavingsDeposits.forEach((doc, index) => {
-    if (doc.reference) proposedByReference.set(doc.reference, distributeDate(index, inspection.pendingSavingsDeposits.length));
-  });
-
-  for (const doc of inspection.pendingSavingsTx) {
-    const proposed = (doc.reference && proposedByReference.get(doc.reference)) || distributeDate(0, 1);
+  for (const plan of inspection.savingsTxPlan || []) {
+    const proposed = plan.proposedHistoryDisplayAt
+      ? new Date(plan.proposedHistoryDisplayAt)
+      : (plan.reference ? proposedByReference.get(plan.reference) : null);
+    if (!proposed) continue;
+    // Explicit request: correct SavingsTransaction.createdAt to the rolling
+    // 6-month window so consumers grouping/filtering by createdAt see a
+    // consistent 6-month history. Audit-sensitive change: backup was created
+    // before writes and rollback restores prior values.
     const res = await SavingsTransaction.updateOne(
-      { _id: doc._id, historyDisplayMigration: { $ne: MIGRATION_KEY } },
-      { $set: { historyDisplayAt: proposed, historyDisplayMigration: MIGRATION_KEY } },
-      { timestamps: false }
+      { _id: plan._id, historyDisplayMigration: { $ne: MIGRATION_KEY } },
+      {
+        $set: {
+          createdAt: proposed,
+          historyDisplayAt: proposed,
+          historyDisplayMigration: MIGRATION_KEY,
+        },
+      },
+      { timestamps: false, strict: false }
     );
     updatedSavingsTransactions += res.modifiedCount || 0;
   }
@@ -293,17 +479,19 @@ async function rollback(backupPath) {
     const id = rec._id;
     const historyDisplayAt = rec.historyDisplayAt ? new Date(rec.historyDisplayAt) : null;
     const historyDisplayMigration = rec.historyDisplayMigration || null;
-    const update = {
-      $set: {
-        historyDisplayAt,
-        historyDisplayMigration,
-      },
+    const set = {
+      historyDisplayAt,
+      historyDisplayMigration,
     };
+    // Restore audit timestamps when present (v4+ backups include createdAt/updatedAt).
+    if (rec.createdAt) set.createdAt = new Date(rec.createdAt);
+    if (rec.updatedAt) set.updatedAt = new Date(rec.updatedAt);
+    const update = { $set: set };
     if (rec.collection === "Savings") {
-      const res = await Savings.updateOne({ _id: id }, update, { timestamps: false });
+      const res = await Savings.updateOne({ _id: id }, update, { timestamps: false, strict: false });
       restoredSavings += res.modifiedCount || (res.matchedCount ? 1 : 0);
     } else if (rec.collection === "SavingsTransaction") {
-      const res = await SavingsTransaction.updateOne({ _id: id }, update, { timestamps: false });
+      const res = await SavingsTransaction.updateOne({ _id: id }, update, { timestamps: false, strict: false });
       restoredSavingsTransactions += res.modifiedCount || (res.matchedCount ? 1 : 0);
     }
   }
@@ -314,14 +502,17 @@ async function rollback(backupPath) {
 function printInspection(inspection) {
   console.log(JSON.stringify({
     migrationKey: inspection.migrationKey,
-    rangeStart: inspection.rangeStart,
-    rangeEnd: inspection.rangeEnd,
+    windowReferenceDate: inspection.windowReferenceDate,
+    rollingWindowMonths: inspection.rollingWindowMonths,
     totalUsersInspected: inspection.totalUsersInspected,
+    eligibleUsersWithSuccessfulSavingsDeposits: inspection.eligibleUsersWithSuccessfulSavingsDeposits,
     usersWithPendingSavingsDeposits: inspection.usersWithPendingSavingsDeposits,
     successfulSavingsDepositsFound: inspection.successfulSavingsDepositsFound,
     successfulSavingsDepositsAlreadyMigrated: inspection.successfulSavingsDepositsAlreadyMigrated,
     pendingSavingsDepositRecords: inspection.pendingSavingsDepositRecords,
+    plannedSavingsDepositRecords: inspection.plannedSavingsDepositRecords,
     pendingSavingsTransactionRecords: inspection.pendingSavingsTransactionRecords,
+    plannedSavingsTransactionRecords: inspection.plannedSavingsTransactionRecords,
     recordsThatWouldBeUpdated: inspection.recordsThatWouldBeUpdated,
   }, null, 2));
 }
@@ -355,16 +546,20 @@ async function main() {
           mode: DRY_RUN ? "dry-run" : "pre-execute-plan",
           summary: {
             migrationKey: inspection.migrationKey,
-            rangeStart: inspection.rangeStart,
-            rangeEnd: inspection.rangeEnd,
+            windowReferenceDate: inspection.windowReferenceDate,
+            rollingWindowMonths: inspection.rollingWindowMonths,
             totalUsersInspected: inspection.totalUsersInspected,
+            eligibleUsersWithSuccessfulSavingsDeposits: inspection.eligibleUsersWithSuccessfulSavingsDeposits,
             usersWithPendingSavingsDeposits: inspection.usersWithPendingSavingsDeposits,
             successfulSavingsDepositsFound: inspection.successfulSavingsDepositsFound,
             successfulSavingsDepositsAlreadyMigrated: inspection.successfulSavingsDepositsAlreadyMigrated,
             pendingSavingsDepositRecords: inspection.pendingSavingsDepositRecords,
+            plannedSavingsDepositRecords: inspection.plannedSavingsDepositRecords,
             pendingSavingsTransactionRecords: inspection.pendingSavingsTransactionRecords,
+            plannedSavingsTransactionRecords: inspection.plannedSavingsTransactionRecords,
             recordsThatWouldBeUpdated: inspection.recordsThatWouldBeUpdated,
           },
+          perUserPlan: inspection.perUserPlan,
           savingsPlan: inspection.savingsPlan,
           savingsTransactionPlan: inspection.savingsTxPlan,
         },
@@ -400,10 +595,13 @@ if (require.main === module) {
 
 module.exports = {
   MIGRATION_KEY,
-  RANGE_START,
-  RANGE_END,
+  WINDOW_MONTHS,
   savingsTargetFilter,
-  distributeDate,
+  getEffectivePaymentDate,
+  subtractMonthsPreserveDay,
+  getRollingSixMonthWindow,
+  generateSixMonthlyDates,
+  buildRollingPlan,
   inspect,
   buildBackupPayload,
   executeMigration,

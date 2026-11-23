@@ -108,39 +108,49 @@ const ScoreRepository = {
       userId,
       type: "deposit",
       status: "completed",
-      createdAt: { $gte: sinceDate },
+      $expr: { $gte: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, sinceDate] },
     }),
 
-  /** Verified deposits inside one calendar month only. */
+  /** Verified deposits inside one calendar month only. Uses effective display date when present. */
   findUserDepositsInRange: (userId, start, end) =>
     Savings.find({
       userId,
       type: "deposit",
       status: "completed",
-      createdAt: { $gte: start, $lt: end },
+      $expr: {
+        $and: [
+          { $gte: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, start] },
+          { $lt: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, end] },
+        ],
+      },
     }),
 
-  /** Verified withdrawals inside one calendar month only. */
+  /** Verified withdrawals inside one calendar month only. Uses effective display date when present. */
   findUserWithdrawalsInRange: (userId, start, end) =>
     Savings.find({
       userId,
       type: "withdrawal",
       status: "completed",
-      createdAt: { $gte: start, $lt: end },
+      $expr: {
+        $and: [
+          { $gte: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, start] },
+          { $lt: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, end] },
+        ],
+      },
     }),
 
   /**
    * Net verified savings balance immediately BEFORE `date`.
    * Deposits add, withdrawals subtract. Loan repayments and loan
    * disbursements are deliberately excluded — money received from a loan
-   * is not savings growth.
+   * is not savings growth. Uses effective display date when present.
    */
   findNetBalanceBefore: async (userId, date) => {
     const records = await Savings.find({
       userId,
       type: { $in: ["deposit", "withdrawal"] },
       status: "completed",
-      createdAt: { $lt: date },
+      $expr: { $lt: [{ $ifNull: ["$historyDisplayAt", "$createdAt"] }, date] },
     }).select("type amount");
     return records.reduce(
       (sum, r) => sum + (r.type === "withdrawal" ? -Number(r.amount || 0) : Number(r.amount || 0)),

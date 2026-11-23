@@ -1,6 +1,8 @@
 const { startSafeSession } = require("../Utilis/transactionRunner");
 const { GuarantorRepository } = require("../Repositories/GuarantorRepository");
 const { createNotification } = require("../Utilis/notificationHelper");
+const { computeMonthlyQualification } = require("../Utilis/savingsQualification");
+const { MIN_MONTHLY_SAVINGS, ELIGIBILITY } = require("../Config/constants");
 const AppError = require("../Utilis/AppError");
 
 const getNetSavings = async (userId) => {
@@ -13,21 +15,13 @@ const getNetSavings = async (userId) => {
 
 const checkSavingsConsistency = async (userId) => {
   const savings = await GuarantorRepository.findCompletedSavings(userId);
-  const monthly = {};
-  savings
-    .filter((item) => item.type === "deposit")
-    .forEach((item) => {
-      const date = new Date(item.createdAt);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      monthly[key] = (monthly[key] || 0) + item.amount;
-    });
-  const now = new Date();
-  for (let i = 5; i >= 0; i -= 1) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    if ((monthly[key] || 0) < 5000) return false;
-  }
-  return true;
+  const qualification = computeMonthlyQualification({
+    records: savings,
+    minimumMonthlyRequired: MIN_MONTHLY_SAVINGS,
+    now: new Date(),
+    windowMonths: ELIGIBILITY?.minMonths || 6,
+  });
+  return qualification.isConsistent;
 };
 
 const search = async (referralCode, userId, loanAmount = 0) => {

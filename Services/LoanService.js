@@ -3,11 +3,13 @@ const crypto = require("crypto");
 const { LoanRepository } = require("../Repositories/LoanRepository");
 const { InterestCalculationService } = require("./InterestCalculationService");
 const { FinancialLedgerService } = require("./FinancialLedgerService");
+const { SavingsService } = require("./SavingsService");
 const { createNotification } = require("../Utilis/notificationHelper");
 const { updateUserScore } = require("../Utilis/scoreService");
 const { logAudit } = require("../Utilis/auditLogger");
 const { FLW_PUBLIC_KEY, FLW_SUBACCOUNT_ID } = require("../Utilis/Flutterwave");
 const { runLoanDefaulterEscalation } = require("../Utilis/loanDefaulterEngine");
+const { computeMonthlyQualification } = require("../Utilis/savingsQualification");
 const AppError = require("../Utilis/AppError");
 const {
   GUARANTOR_MIN_SAVINGS,
@@ -27,32 +29,30 @@ const getNetSavings = async (userId) => {
   }, 0);
 };
 
-const checkSavingsConsistency = async (userId) => {
-  const deposits = await LoanRepository.findCompletedDeposits(userId);
-  const monthlySavings = {};
-  deposits.forEach((deposit) => {
-    const date = new Date(deposit.createdAt);
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    monthlySavings[key] = (monthlySavings[key] || 0) + deposit.amount;
+const getMonthlyQualificationSummary = async (userId, settings) => {
+  const records = await LoanRepository.findCompletedSavings(userId);
+  const minMonthlyRequired =
+    Number(settings?.eligibility?.minMonthlySavings) ||
+    Number(process.env.MIN_MONTHLY_SAVINGS) ||
+    undefined;
+  return computeMonthlyQualification({
+    records,
+    minimumMonthlyRequired,
+    now: new Date(),
+    windowMonths: Number(settings?.eligibility?.minMonths) || 6,
   });
+};
 
-  const today = new Date();
-  for (let i = 5; i >= 0; i -= 1) {
-    const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    if ((monthlySavings[key] || 0) < 5000) return false;
-  }
-  return true;
+const checkSavingsConsistency = async (userId) => {
+  const settings = await getSystemSettings();
+  const qualification = await getMonthlyQualificationSummary(userId, settings);
+  return qualification.isConsistent;
 };
 
 const countSavingsMonths = async (userId) => {
-  const deposits = await LoanRepository.findCompletedDeposits(userId);
-  return new Set(
-    deposits.map((deposit) => {
-      const date = new Date(deposit.createdAt);
-      return `${date.getFullYear()}-${date.getMonth()}`;
-    })
-  ).size;
+  const settings = await getSystemSettings();
+  const qualification = await getMonthlyQualificationSummary(userId, settings);
+  return qualification.qualifyingMonths;
 };
 
 const getSystemSettings = async () => {
@@ -79,12 +79,14 @@ const getEligibility = async (userId, loanType = "cooperative") => {
   const settings = await getSystemSettings();
   const isEmergency = loanType === "emergency";
 
-  const [netSavings, isConsistent, monthsCount, completedRegularLoansCount] = await Promise.all([
+  const [netSavings, qualification, completedRegularLoansCount] = await Promise.all([
     getNetSavings(userId),
-    checkSavingsConsistency(userId),
-    countSavingsMonths(userId),
+    getMonthlyQualificationSummary(userId, settings),
     LoanRepository.count({ userId, status: "completed", loanType: { $ne: "emergency" } }),
   ]);
+
+  const isConsistent = qualification.isConsistent;
+  const monthsCount = qualification.qualifyingMonths;
 
   let tierPercentage;
   let tierName;
@@ -115,7 +117,15 @@ const getEligibility = async (userId, loanType = "cooperative") => {
     monthsCount,
     minSavings: settings.eligibility.minSavings,
     minMonths: settings.eligibility.minMonths,
+    minMonthlySavings: qualification.minimumMonthlyRequired,
     isEmergency,
+    monthlyQualification: {
+      minimumMonthlyRequired: qualification.minimumMonthlyRequired,
+      windowMonths: qualification.windowMonths,
+      qualifyingMonths: qualification.qualifyingMonths,
+      isConsistent: qualification.isConsistent,
+      months: qualification.months,
+    },
   };
 };
 
