@@ -207,7 +207,7 @@ exports.cancelLoan = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: "Loan application withdrawn successfully.",
+      message: "Loan application terminated successfully.",
       loan,
     });
   } catch (err) {

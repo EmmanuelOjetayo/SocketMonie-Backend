@@ -390,17 +390,21 @@ const applyForLoan = async ({
  * Replace a rejected guarantor with a new eligible guarantor.
  */
 /**
- * Withdraw (cancel) a loan application that is still awaiting guarantors.
- * This is the guaranteed exit from "waiting_guarantor": without it a member
- * whose guarantors never respond could be permanently blocked from applying
- * again (findActiveForUser keeps counting waiting_guarantor applications).
- * The loan is marked "withdrawn" (not "rejected" — admin rejection is a
- * separate review decision), pending guarantor requests are closed, and all
- * non-replaced guarantors are notified that the request is void.
+ * Terminate a loan application the member created before admin approval.
+ *
+ * Owner-requested behavior: when a member withdraws/cancels a pre-approval
+ * loan for personal reasons, the loan record is permanently removed from the
+ * database. It must not remain as active, pending, or partially processed.
+ *
+ * Termination is allowed only before admin approval (waiting_guarantor or
+ * pending_review). Disbursed/active/defaulted/completed loans cannot be
+ * deleted through this path.
  */
 const cancelApplication = async ({ userId, loanId, reason }) => {
+  const TERMINABLE_BEFORE_APPROVAL = ["waiting_guarantor", "pending_review"];
   const session = await startSafeSession();
-  let cancelledLoan;
+  let deletedLoanSnapshot;
+  let notifyTargets = [];
 
   try {
     await session.withTransaction(async () => {
@@ -408,44 +412,72 @@ const cancelApplication = async ({ userId, loanId, reason }) => {
       if (!loan) throw new AppError("Loan not found.", 404);
 
       if (loan.userId.toString() !== userId.toString()) {
-        throw new AppError("You are not authorized to cancel this loan application.", 403);
+        throw new AppError("You are not authorized to terminate this loan application.", 403);
       }
 
-      if (loan.status !== "waiting_guarantor") {
-        throw new AppError("Only a loan application that is still awaiting guarantors can be withdrawn.", 400);
+      if (!TERMINABLE_BEFORE_APPROVAL.includes(loan.status)) {
+        throw new AppError(
+          "Loan applications can only be terminated before admin approval.",
+          400
+        );
       }
 
-      loan.status = "withdrawn";
-      loan.rejectionReason = reason || "Withdrawn by applicant";
-      loan.reviewedAt = new Date();
-
-      // Close every still-pending guarantor request (standalone docs + embedded).
-      for (const guarantor of loan.guarantors || []) {
-        if (!guarantor.isReplaced && ["pending", "waiting_guarantor"].includes(guarantor.status)) {
-          guarantor.status = "expired";
-        }
+      // Defensive guard: pre-approval loans must not have progressed into
+      // disbursement/repayment/recovery. Never silently delete a processed loan.
+      const hasProcessedFinancials =
+        Number(loan.amountPaid || 0) > 0 ||
+        Boolean(loan.disbursedAt) ||
+        Boolean(loan.approvedAt) ||
+        loan.payoutStatus === "completed" ||
+        (Array.isArray(loan.repaymentHistory) && loan.repaymentHistory.length > 0);
+      if (hasProcessedFinancials) {
+        throw new AppError(
+          "This loan has already been processed and cannot be deleted.",
+          400
+        );
       }
-      await LoanRepository.saveLoan(loan, session);
-      await LoanRepository.expirePendingGuarantorRequests(loan._id, session);
 
-      cancelledLoan = loan;
+      const guarantorDocs = await LoanRepository.findGuarantorDocumentsByLoanId(loan._id, session);
+      const targetIds = new Set();
+      for (const g of loan.guarantors || []) {
+        if (!g?.isReplaced && g?.userId) targetIds.add(g.userId.toString());
+      }
+      for (const g of guarantorDocs || []) {
+        if (!g?.isReplaced && g?.guarantorUserId) targetIds.add(g.guarantorUserId.toString());
+      }
+      notifyTargets = [...targetIds];
+
+      deletedLoanSnapshot = {
+        _id: loan._id,
+        loanNumber: loan.loanNumber,
+        principalAmount: loan.principalAmount,
+        status: loan.status,
+      };
+
+      // Remove associated standalone guarantor requests so no orphaned
+      // pre-approval request remains after the loan record is deleted.
+      await LoanRepository.deleteGuarantorDocumentsByLoanId(loan._id, session);
+      await LoanRepository.deleteLoanById(loan._id, session);
     });
   } finally {
     await session.endSession();
   }
 
-  const notifyTargets = (cancelledLoan.guarantors || [])
-    .filter((g) => !g.isReplaced && g.userId)
-    .map((g) => g.userId);
+  const reasonText = String(reason || "").trim() || "Terminated by applicant before admin approval";
+  const notificationMessage = `${deletedLoanSnapshot.loanNumber} was terminated by the applicant before admin approval. Your guarantee request is closed — no action is needed.`;
 
   await Promise.all(
     notifyTargets.map((guarantorId) =>
       createNotification({
         userId: guarantorId,
         type: "loan",
-        title: "Guarantee Request Withdrawn",
-        message: `${cancelledLoan.loanNumber} was withdrawn by the applicant. Your guarantee request is closed — no action is needed.`,
-        data: { loanId: cancelledLoan._id, loanNumber: cancelledLoan.loanNumber, status: "withdrawn" },
+        title: "Loan Application Terminated",
+        message: notificationMessage,
+        data: {
+          loanId: deletedLoanSnapshot._id,
+          loanNumber: deletedLoanSnapshot.loanNumber,
+          status: "terminated",
+        },
       })
     )
   );
@@ -454,15 +486,23 @@ const cancelApplication = async ({ userId, loanId, reason }) => {
     userId,
     action: "loan_withdraw",
     targetType: "loan",
-    targetId: cancelledLoan._id,
+    targetId: deletedLoanSnapshot._id,
     details: {
-      loanNumber: cancelledLoan.loanNumber,
-      principalAmount: cancelledLoan.principalAmount,
-      reason: cancelledLoan.rejectionReason,
+      loanNumber: deletedLoanSnapshot.loanNumber,
+      principalAmount: deletedLoanSnapshot.principalAmount,
+      previousStatus: deletedLoanSnapshot.status,
+      reason: reasonText,
+      deleted: true,
+      guarantorsNotified: notifyTargets.length,
     },
   });
 
-  return cancelledLoan;
+  return {
+    _id: deletedLoanSnapshot._id,
+    loanNumber: deletedLoanSnapshot.loanNumber,
+    status: "terminated",
+    deleted: true,
+  };
 };
 
 const replaceGuarantor = async ({ userId, loanId, oldGuarantorUserId, newGuarantorReferralCode, reason }) => {

@@ -144,6 +144,24 @@ const LoanRepository = {
     return query;
   },
 
+  findGuarantorDocumentsByLoanId: (loanId, session = null) => {
+    const query = Guarantor.find({ loanId });
+    if (session) query.session(session);
+    return query;
+  },
+
+  deleteGuarantorDocumentsByLoanId: (loanId, session = null) => {
+    const query = Guarantor.deleteMany({ loanId });
+    if (session) query.session(session);
+    return query;
+  },
+
+  deleteLoanById: (loanId, session = null) => {
+    const query = Loan.deleteOne({ _id: loanId });
+    if (session) query.session(session);
+    return query;
+  },
+
   // Loan repayments use LoanTransaction, not Savings. These method names are
   // retained for call-site stability but now target the dedicated model.
   findSavings: (filter, session = null) => {
